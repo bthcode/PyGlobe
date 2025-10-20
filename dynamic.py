@@ -1,0 +1,325 @@
+# globe_offline_tile_aligned.py
+# Offline, disk-only globe with tile-aligned quads, LOD blending, and thread-safe GL uploads.
+#
+# Requirements:
+#   pip install PyQt5 PyOpenGL Pillow numpy
+#
+# Cache layout:
+#   ./cache/{z}/{x}/{y}.png
+#
+# Place tiles up to z=5 (or whatever you have) in that layout and run this script.
+
+import sys, os, math, threading, queue
+from collections import OrderedDict
+
+import numpy as np
+from PIL import Image, ImageDraw, ImageFont
+
+from PyQt5 import QtCore, QtWidgets, QtGui
+#from PyQt5.QtOpenGL import QOpenGLWidget
+from PyQt5.QtWidgets import QApplication, QMainWindow, QOpenGLWidget
+from OpenGL.GL import *
+from OpenGL.GLU import *
+
+# ----------------- Config -----------------
+CACHE_ROOT = "./cache"
+TILE_SIZE = 256
+MIN_Z = 0
+MAX_Z = 5    # set to highest zoom level you have in cache
+MAX_GPU_TEXTURES = 512
+
+# LOD blending params
+BLEND_SHARPNESS = 3.0
+
+# Checkerboard fallback
+CHECKER_COLOR_A = 200
+CHECKER_COLOR_B = 60
+
+# ----------------- Utility -----------------
+def clamp(a,b,c): return max(b, min(c, a))
+
+def latlon_to_xyz(lat, lon, R=1.0):
+    la = math.radians(lat)
+    lo = math.radians(lon)
+    x = R * math.cos(la) * math.cos(lo)
+    y = R * math.sin(la)
+    z = R * math.cos(la) * math.sin(lo)
+    return x,y,z
+
+def tile2lon(x, z):
+    n = 2 ** z
+    return x / n * 360.0 - 180.0
+
+def tile2lat(y, z):
+    n = 2 ** z
+    lat_rad = math.atan(math.sinh(math.pi * (1 - 2 * y / n)))
+    return math.degrees(lat_rad)
+
+def tile_path(z,x,y):
+    return os.path.join(CACHE_ROOT, str(z), str(x), f"{y}.png")
+
+def make_checkerboard(size=TILE_SIZE, squares=8):
+    arr = np.zeros((size,size,3), dtype=np.uint8)
+    s = size//squares
+    for yy in range(squares):
+        for xx in range(squares):
+            color = CHECKER_COLOR_A if (xx+yy)%2 else CHECKER_COLOR_B
+            arr[yy*s:(yy+1)*s, xx*s:(xx+1)*s, :] = color
+    return arr
+
+CHECKER = make_checkerboard()
+
+# ----------------- Disk loader worker -----------------
+class DiskLoader(threading.Thread):
+    def __init__(self, req_q, res_q, stop_event):
+        super().__init__(daemon=True)
+        self.req_q = req_q
+        self.res_q = res_q
+        self.stop_event = stop_event
+        try:
+            self.font = ImageFont.truetype("DejaVuSans.ttf", 18)
+        except Exception:
+            self.font = None
+
+    def run(self):
+        while not self.stop_event.is_set():
+            try:
+                z,x,y = self.req_q.get(timeout=0.1)
+            except queue.Empty:
+                continue
+            np_img = None
+            path = tile_path(z,x,y)
+            if os.path.exists(path):
+                try:
+                    pil = Image.open(path).convert("RGB")
+                    draw = ImageDraw.Draw(pil)
+                    draw.rectangle([2,2,110,24], fill=(0,0,0,120))
+                    draw.text((6,2), f"{z}/{x}/{y}", fill=(255,0,0), font=self.font)
+                    np_img = np.asarray(pil, dtype=np.uint8)
+                except Exception as e:
+                    print("disk loader: failed to open", path, e)
+            else:
+                arr = CHECKER.copy()
+                pil = Image.fromarray(arr)
+                draw = ImageDraw.Draw(pil)
+                draw.text((6,6), f"missing {z}/{x}/{y}", fill=(255,0,0), font=self.font)
+                np_img = np.asarray(pil, dtype=np.uint8)
+            # keep exactly 3 channels
+            if np_img.ndim == 3 and np_img.shape[2] > 3:
+                np_img = np_img[:,:,:3]
+            self.res_q.put((z,x,y,np_img))
+            self.req_q.task_done()
+
+# ----------------- GL widget -----------------
+class GlobeOfflineTileAligned(QOpenGLWidget):
+    def __init__(self):
+        super().__init__()
+        self.setMinimumSize(900,600)
+        self.rot_x = -30.0
+        self.rot_y = -90.0
+        self.distance = 2.8
+        self.last_pos = None
+
+        # background loader queues
+        self.req_q = queue.Queue()
+        self.res_q = queue.Queue()
+        self.stop_event = threading.Event()
+        self.loader = DiskLoader(self.req_q, self.res_q, self.stop_event)
+        self.loader.start()
+
+        # pending uploads
+        self.pending = {}
+        self.pending_lock = threading.Lock()
+        self.textures = OrderedDict()
+        self.inflight = set()
+        self.max_gpu_textures = MAX_GPU_TEXTURES
+        self.flip_horizontal_on_upload = True
+
+        # poll timer to move results from res_q -> pending
+        self.poll_timer = QtCore.QTimer(self)
+        self.poll_timer.timeout.connect(self._transfer_results_to_pending)
+        self.poll_timer.start(40)
+
+    def closeEvent(self, ev):
+        self.stop_event.set()
+        self.loader.join(timeout=1.0)
+        super().closeEvent(ev)
+
+    def initializeGL(self):
+        glEnable(GL_DEPTH_TEST)
+        glEnable(GL_TEXTURE_2D)
+        glEnable(GL_CULL_FACE)
+        glEnable(GL_BLEND)
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
+        glClearColor(0.07,0.08,0.1,1.0)
+
+    def resizeGL(self, w, h):
+        glViewport(0,0,w,h)
+
+    def paintGL(self):
+        self.makeCurrent()
+        self._upload_pending_textures()
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
+
+        glMatrixMode(GL_PROJECTION)
+        glLoadIdentity()
+        gluPerspective(45, max(1, self.width()/self.height()), 0.1, 100)
+        glMatrixMode(GL_MODELVIEW)
+        glLoadIdentity()
+        gluLookAt(0,0,self.distance, 0,0,0, 0,1,0)
+        glRotatef(self.rot_x,1,0,0)
+        glRotatef(self.rot_y,0,1,0)
+
+        # zoom / blend
+        zoom_float = clamp( (8-self.distance)/(8-1.2)*(MAX_Z-MIN_Z)+MIN_Z, MIN_Z, MAX_Z)
+        base_z = int(math.floor(zoom_float))
+        next_z = clamp(base_z+1, MIN_Z, MAX_Z)
+        t = zoom_float - base_z
+        blend = clamp((math.tanh((t*2-1)*BLEND_SHARPNESS)+1)/2, 0,1)
+
+        # draw base tiles
+        n = 2**base_z
+        for x in range(n):
+            for y in range(n):
+                key = (base_z,x,y)
+                tex = self._get_texture_for_key(key)
+                if tex is None:
+                    self._ensure_request(key)
+                    continue
+                lon0, lon1 = tile2lon(x, base_z), tile2lon(x+1, base_z)
+                lat0, lat1 = tile2lat(y+1, base_z), tile2lat(y, base_z)
+                self._draw_spherical_tile(lat0, lat1, lon0, lon1, tex, alpha=1.0)
+
+        # draw next level tiles for blending
+        if next_z != base_z:
+            n2 = 2**next_z
+            for x in range(n2):
+                for y in range(n2):
+                    key = (next_z,x,y)
+                    tex = self._get_texture_for_key(key)
+                    if tex is None:
+                        self._ensure_request(key)
+                        continue
+                    lon0, lon1 = tile2lon(x, next_z), tile2lon(x+1, next_z)
+                    lat0, lat1 = tile2lat(y+1, next_z), tile2lat(y, next_z)
+                    self._draw_spherical_tile(lat0, lat1, lon0, lon1, tex, alpha=blend)
+
+    # ----------------- pending/result handling -----------------
+    def _transfer_results_to_pending(self):
+        while True:
+            try:
+                z,x,y,arr = self.res_q.get_nowait()
+            except queue.Empty:
+                break
+            key = (z,x,y)
+            with self.pending_lock:
+                self.pending[key] = arr
+            self.res_q.task_done()
+        self.update()
+
+    def _upload_pending_textures(self):
+        with self.pending_lock:
+            items = list(self.pending.items())
+            self.pending.clear()
+        if not items:
+            return
+        for key, arr in items:
+            if arr is None:
+                continue
+            if self.flip_horizontal_on_upload:
+                arr = np.flip(arr, axis=1)
+            arr = np.ascontiguousarray(arr, dtype=np.uint8)
+            h,w = arr.shape[0], arr.shape[1]
+            texid = glGenTextures(1)
+            glBindTexture(GL_TEXTURE_2D, texid)
+            glPixelStorei(GL_UNPACK_ALIGNMENT,1)
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR)
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE)
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE)
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, w,h,0,GL_RGB,GL_UNSIGNED_BYTE, arr)
+            glGenerateMipmap(GL_TEXTURE_2D)
+            glBindTexture(GL_TEXTURE_2D,0)
+            if key in self.textures:
+                old = self.textures.pop(key)
+                try: glDeleteTextures([old])
+                except: pass
+            self.textures[key] = texid
+            while len(self.textures) > self.max_gpu_textures:
+                oldk, oldtex = self.textures.popitem(last=False)
+                try: glDeleteTextures([oldtex])
+                except: pass
+
+    # ----------------- texture & request helpers -----------------
+    def _get_texture_for_key(self, key):
+        return self.textures.get(key)
+    def _ensure_request(self,key):
+        if key in self.inflight: return
+        z,x,y = key
+        if z<MIN_Z or z>MAX_Z: return
+        self.inflight.add(key)
+        self.req_q.put(key)
+
+    # ----------------- drawing helpers -----------------
+    def _draw_spherical_tile(self, lat0, lat1, lon0, lon1, texid, alpha=1.0):
+        glBindTexture(GL_TEXTURE_2D, texid)
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE)
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE)
+        glColor4f(1.0,1.0,1.0,alpha)
+        glBegin(GL_QUADS)
+        corners = [
+            (lat0, lon0, 1.0, 1.0),
+            (lat0, lon1, 0.0, 1.0),
+            (lat1, lon1, 0.0, 0.0),
+            (lat1, lon0, 1.0, 0.0),
+        ]
+        for lat,lon,u,v in corners:
+            x,y,z = latlon_to_xyz(lat,lon)
+            glTexCoord2f(u,v)
+            glVertex3f(x,y,z)
+        glEnd()
+        glBindTexture(GL_TEXTURE_2D,0)
+        glColor4f(1.0,1.0,1.0,1.0)
+
+    # ----------------- interaction -----------------
+    def mousePressEvent(self, ev): self.last_pos = ev.pos()
+    def mouseMoveEvent(self, ev):
+        if self.last_pos is None: self.last_pos=ev.pos(); return
+        dx = ev.x()-self.last_pos.x()
+        dy = ev.y()-self.last_pos.y()
+        if ev.buttons() & QtCore.Qt.LeftButton:
+            self.rot_y -= dx*0.5
+            self.rot_x -= dy*0.5
+            self.update()
+        self.last_pos=ev.pos()
+    def wheelEvent(self, ev):
+        delta = ev.angleDelta().y()/120.0
+        self.distance -= delta*0.35
+        self.distance = clamp(self.distance, 1.2, 8.0)
+        self.update()
+    def keyPressEvent(self, ev):
+        if ev.key()==QtCore.Qt.Key_Escape: self.close()
+        else: super().keyPressEvent(ev)
+
+    def __del__(self):
+        try: self.stop_event.set()
+        except: pass
+
+# ----------------- main -----------------
+if __name__=="__main__":
+    os.makedirs(CACHE_ROOT, exist_ok=True)
+    available = {}
+    for z in range(MIN_Z, MAX_Z+1):
+        zd = os.path.join(CACHE_ROOT,str(z))
+        if os.path.isdir(zd):
+            available[z] = sum(len(files) for _,_,files in os.walk(zd))
+        else: available[z]=0
+    print("Cache availability (tiles found):", available)
+
+    app = QtWidgets.QApplication(sys.argv)
+    win = GlobeOfflineTileAligned()
+    win.setWindowTitle("Offline Globe — Tile-Aligned LOD")
+    win.resize(1200,800)
+    win.show()
+    sys.exit(app.exec_())
+
