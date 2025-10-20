@@ -25,7 +25,7 @@ from OpenGL.GLU import *
 # Config
 # ----------------------
 TILE_SIZE = 256
-ZOOM = 2  # start small; increase for more detail (but cost grows as (2^z)^2 tiles)
+ZOOM = 3  # start small; increase for more detail (but cost grows as (2^z)^2 tiles)
 TMS_IS_TOP_ORIGIN = True
 # Example TMS/XYZ templates:
 # - XYZ (Google/OpenStreetMap): "https://tile.openstreetmap.org/{z}/{x}/{y}.png" (y top origin)
