@@ -11,6 +11,9 @@
 
 import sys, os, math, threading, queue
 from collections import OrderedDict
+import requests
+timeout = 3
+from io import BytesIO
 
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
@@ -22,11 +25,14 @@ from OpenGL.GL import *
 from OpenGL.GLU import *
 
 # ----------------- Config -----------------
+
+TILE_URL = "https://tile.openstreetmap.org/{z}/{x}/{y}.png"  # common XYZ server (y top origin)
+USER_AGENT = "pyvista-globe-example/1.0 (your_email@example.com)"  # set a sensible UA
 CACHE_ROOT = "./cache"
 TILE_SIZE = 256
 MIN_Z = 0
 MAX_Z = 5    # set to highest zoom level you have in cache
-MAX_GPU_TEXTURES = 512
+MAX_GPU_TEXTURES = 1024
 
 # LOD blending params
 BLEND_SHARPNESS = 3.0
@@ -38,18 +44,27 @@ CHECKER_COLOR_B = 60
 # ----------------- Utility -----------------
 def clamp(a,b,c): return max(b, min(c, a))
 
+#def latlon_to_xyzX(lat, lon, R=1.0):
+#    la = math.radians(lat)
+#    lo = math.radians(lon)
+#    x = -R * math.cos(la) * math.cos(lo)   # flipped sign to orient normals outward
+#    y = R * math.sin(la)
+#    z = R * math.cos(la) * math.sin(lo)
+#    return x, y, z
+
 def latlon_to_xyz(lat, lon, R=1.0):
     la = math.radians(lat)
-    lo = math.radians(lon)
+    lo = math.radians(-lon)  # ← flip sign to restore east-positive orientation
     x = R * math.cos(la) * math.cos(lo)
     y = R * math.sin(la)
     z = R * math.cos(la) * math.sin(lo)
-    return x,y,z
+    return x, y, z
+
 
 def tile2lon(x, z):
-    n = 2 ** z
-    return x / n * 360.0 - 180.0
-
+     n = 2 ** z
+     return x / n * 360.0 - 180.0
+ 
 def tile2lat(y, z):
     n = 2 ** z
     lat_rad = math.atan(math.sinh(math.pi * (1 - 2 * y / n)))
@@ -77,7 +92,7 @@ class DiskLoader(threading.Thread):
         self.res_q = res_q
         self.stop_event = stop_event
         try:
-            self.font = ImageFont.truetype("DejaVuSans.ttf", 18)
+            self.font = ImageFont.truetype("DejaVuSans.ttf", 72)
         except Exception:
             self.font = None
 
@@ -93,12 +108,24 @@ class DiskLoader(threading.Thread):
                 try:
                     pil = Image.open(path).convert("RGB")
                     draw = ImageDraw.Draw(pil)
-                    draw.rectangle([2,2,110,24], fill=(0,0,0,120))
-                    draw.text((6,2), f"{z}/{x}/{y}", fill=(255,0,0), font=self.font)
+                    draw.rectangle([2,2,110,48], fill=(255,255,255,120))
+                    draw.text((16,4), f"{z}/{x}/{y}", fill=(255,0,0), font=self.font)
                     np_img = np.asarray(pil, dtype=np.uint8)
                 except Exception as e:
                     print("disk loader: failed to open", path, e)
             else:
+
+                # download fot later
+                url = TILE_URL.format(z=z, x=x, y=y)
+                s = requests.Session()
+                s.headers.update({"User-Agent": USER_AGENT})
+                resp = s.get(url, timeout=timeout)
+                img = Image.open(BytesIO(resp.content)).convert("RGBA")
+                import pathlib
+                p = pathlib.Path(path)
+                p.parent.mkdir(parents=True, exist_ok=True)
+                img.save(p)
+
                 arr = CHECKER.copy()
                 pil = Image.fromarray(arr)
                 draw = ImageDraw.Draw(pil)
@@ -133,7 +160,7 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
         self.textures = OrderedDict()
         self.inflight = set()
         self.max_gpu_textures = MAX_GPU_TEXTURES
-        self.flip_horizontal_on_upload = True
+        self.flip_horizontal_on_upload = False
 
         # poll timer to move results from res_q -> pending
         self.poll_timer = QtCore.QTimer(self)
@@ -148,7 +175,9 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
     def initializeGL(self):
         glEnable(GL_DEPTH_TEST)
         glEnable(GL_TEXTURE_2D)
+        glFrontFace(GL_CCW)
         glEnable(GL_CULL_FACE)
+        glCullFace(GL_BACK)
         glEnable(GL_BLEND)
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
         glClearColor(0.07,0.08,0.1,1.0)
@@ -164,6 +193,12 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
         glMatrixMode(GL_PROJECTION)
         glLoadIdentity()
         gluPerspective(45, max(1, self.width()/self.height()), 0.1, 100)
+
+        #
+        #glScalef(-1.0, 1.0, 1.0)  # flip X axis
+        #glTranslatef(-1.0, 0.0, 0.0)
+        #
+
         glMatrixMode(GL_MODELVIEW)
         glLoadIdentity()
         gluLookAt(0,0,self.distance, 0,0,0, 0,1,0)
@@ -189,6 +224,7 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
                 lon0, lon1 = tile2lon(x, base_z), tile2lon(x+1, base_z)
                 lat0, lat1 = tile2lat(y+1, base_z), tile2lat(y, base_z)
                 self._draw_spherical_tile(lat0, lat1, lon0, lon1, tex, alpha=1.0)
+
 
         # draw next level tiles for blending
         if next_z != base_z:
@@ -266,20 +302,91 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE)
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE)
         glColor4f(1.0,1.0,1.0,alpha)
-        glBegin(GL_QUADS)
-        corners = [
-            (lat0, lon0, 1.0, 1.0),
-            (lat0, lon1, 0.0, 1.0),
-            (lat1, lon1, 0.0, 0.0),
-            (lat1, lon0, 1.0, 0.0),
-        ]
-        for lat,lon,u,v in corners:
-            x,y,z = latlon_to_xyz(lat,lon)
-            glTexCoord2f(u,v)
-            glVertex3f(x,y,z)
-        glEnd()
+
+        
+        if 1:
+            n_sub = 6  # you can increase for smoother curvature; can be adaptive by zoom
+            latitudes = np.linspace(lat0, lat1, n_sub+1)
+            longitudes = np.linspace(lon0, lon1, n_sub+1)
+
+            self.debug_mode = True
+            if self.debug_mode:
+                glDisable(GL_TEXTURE_2D)
+                glColor3f(1.0, 0.0, 0.0)  # red borders
+                glBegin(GL_LINE_LOOP)
+                for i in range(n_sub + 1):
+                    t = i / n_sub
+                    lat_a = lat0 + (lat1 - lat0) * t
+                    lon_a = lon0
+                    lon_b = lon1
+                    # bottom edge
+                    glVertex3f(*latlon_to_xyz(lat_a, lon_a))
+                for j in range(n_sub + 1):
+                    s = j / n_sub
+                    lon_a = lon0 + (lon1 - lon0) * s
+                    lat_a = lat1
+                    # right edge
+                    glVertex3f(*latlon_to_xyz(lat_a, lon_a))
+                for i in range(n_sub, -1, -1):
+                    t = i / n_sub
+                    lat_a = lat0 + (lat1 - lat0) * t
+                    lon_a = lon1
+                    lon_b = lon0
+                    # top edge
+                    glVertex3f(*latlon_to_xyz(lat_a, lon_a))
+                for j in range(n_sub, -1, -1):
+                    s = j / n_sub
+                    lon_a = lon0 + (lon1 - lon0) * s
+                    lat_a = lat0
+                    # left edge
+                    glVertex3f(*latlon_to_xyz(lat_a, lon_a))
+                glEnd()
+                glEnable(GL_TEXTURE_2D)
+                glColor3f(1, 1, 1)
+
+
+
+
+            for i in range(n_sub):
+                for j in range(n_sub):
+                    la0 = latitudes[i]; la1 = latitudes[i+1]
+                    lo0 = longitudes[j]; lo1 = longitudes[j+1]
+
+                    # standard UVs (u: 0->1 left->right; v: 1->0 top->bottom)
+                    t00 = (j / n_sub, 1 - i / n_sub)
+                    t01 = ((j+1) / n_sub, 1 - i / n_sub)
+                    t11 = ((j+1) / n_sub, 1 - (i+1) / n_sub)
+                    t10 = (j / n_sub, 1 - (i+1) / n_sub)
+
+                    v00 = latlon_to_xyz(la0, lo0)
+                    v01 = latlon_to_xyz(la0, lo1)
+                    v11 = latlon_to_xyz(la1, lo1)
+                    v10 = latlon_to_xyz(la1, lo0)
+
+                    glBegin(GL_QUADS)
+                    glTexCoord2f(*t00); glVertex3f(*v00)
+                    glTexCoord2f(*t01); glVertex3f(*v01)
+                    glTexCoord2f(*t11); glVertex3f(*v11)
+                    glTexCoord2f(*t10); glVertex3f(*v10)
+                    glEnd()
+
+        else:
+            glBegin(GL_QUADS)
+            corners = [
+                (lat0, lon0, 1.0, 1.0),
+                (lat0, lon1, 0.0, 1.0),
+                (lat1, lon1, 0.0, 0.0),
+                (lat1, lon0, 1.0, 0.0),
+            ]
+            for lat,lon,u,v in corners:
+                x,y,z = latlon_to_xyz(lat,lon)
+                glTexCoord2f(u,v)
+                glVertex3f(x,y,z)
+            glEnd()
         glBindTexture(GL_TEXTURE_2D,0)
         glColor4f(1.0,1.0,1.0,1.0)
+        
+
 
     # ----------------- interaction -----------------
     def mousePressEvent(self, ev): self.last_pos = ev.pos()
@@ -288,8 +395,8 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
         dx = ev.x()-self.last_pos.x()
         dy = ev.y()-self.last_pos.y()
         if ev.buttons() & QtCore.Qt.LeftButton:
-            self.rot_y -= dx*0.5
-            self.rot_x -= dy*0.5
+            self.rot_y += dx*0.5
+            self.rot_x += dy*0.5
             self.update()
         self.last_pos=ev.pos()
     def wheelEvent(self, ev):
