@@ -1,0 +1,10 @@
+name: pyglobe
+channels:
+  - defaults
+  - conda-forge
+dependencies:
+  - numpy=2.3.1
+  - pillow=11.3.0
+  - requests=2.32.5
+  - pyqt=5.15.10
+  - pyopengl=3.1.9
