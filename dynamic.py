@@ -44,14 +44,6 @@ CHECKER_COLOR_B = 60
 # ----------------- Utility -----------------
 def clamp(a,b,c): return max(b, min(c, a))
 
-#def latlon_to_xyzX(lat, lon, R=1.0):
-#    la = math.radians(lat)
-#    lo = math.radians(lon)
-#    x = -R * math.cos(la) * math.cos(lo)   # flipped sign to orient normals outward
-#    y = R * math.sin(la)
-#    z = R * math.cos(la) * math.sin(lo)
-#    return x, y, z
-
 def latlon_to_xyz(lat, lon, R=1.0):
     la = math.radians(lat)
     lo = math.radians(-lon)  # ← flip sign to restore east-positive orientation
@@ -59,7 +51,6 @@ def latlon_to_xyz(lat, lon, R=1.0):
     y = R * math.sin(la)
     z = R * math.cos(la) * math.sin(lo)
     return x, y, z
-
 
 def tile2lon(x, z):
      n = 2 ** z
@@ -207,8 +198,11 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
 
         # zoom / blend
         zoom_float = clamp( (8-self.distance)/(8-1.2)*(MAX_Z-MIN_Z)+MIN_Z, MIN_Z, MAX_Z)
+        print (f'----------------> zoom: {zoom_float} <----------------')
         base_z = int(math.floor(zoom_float))
+        print (f'----------------> base_z: {base_z} <----------------')
         next_z = clamp(base_z+1, MIN_Z, MAX_Z)
+        print (f'-----------------> next_z: {next_z} <------------------')
         t = zoom_float - base_z
         blend = clamp((math.tanh((t*2-1)*BLEND_SHARPNESS)+1)/2, 0,1)
 
