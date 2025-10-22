@@ -32,7 +32,7 @@ CACHE_ROOT = "./cache"
 TILE_SIZE = 256
 MIN_Z = 0
 MAX_Z = 5    # set to highest zoom level you have in cache
-MAX_GPU_TEXTURES = 1024
+MAX_GPU_TEXTURES = 2048
 
 # LOD blending params
 BLEND_SHARPNESS = 3.0
