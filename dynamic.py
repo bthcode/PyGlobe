@@ -30,7 +30,7 @@ TILE_URL = "https://tile.openstreetmap.org/{z}/{x}/{y}.png"  # common XYZ server
 USER_AGENT = "pyvista-globe-example/1.0 (your_email@example.com)"  # set a sensible UA
 CACHE_ROOT = "./cache"
 TILE_SIZE = 256
-MIN_Z = 0
+MIN_Z = 2
 MAX_Z = 5    # set to highest zoom level you have in cache
 MAX_GPU_TEXTURES = 2048
 
@@ -40,6 +40,43 @@ BLEND_SHARPNESS = 3.0
 # Checkerboard fallback
 CHECKER_COLOR_A = 200
 CHECKER_COLOR_B = 60
+
+
+def approximate_visible_bbox(camera_pos, camera_dir, fov_y_deg, aspect):
+    """
+    Approximate the visible lat/lon rectangle of the Earth.
+    camera_pos: np.array([x, y, z]) in Earth-centered coordinates (meters or normalized radius)
+    camera_dir: unit vector pointing toward the Earth center
+    fov_y_deg: vertical field of view in degrees
+    aspect: viewport width / height
+    Returns (min_lat, max_lat, min_lon, max_lon)
+    """
+    R = 1.0  # assume unit sphere
+
+    # Find where the camera looks (intersection with Earth)
+    d = -np.dot(camera_pos, camera_dir)
+    closest_point = camera_pos + d * camera_dir
+    lat0 = np.degrees(np.arcsin(closest_point[1] / R))
+    lon0 = np.degrees(np.arctan2(closest_point[0], closest_point[2]))
+
+    # Approximate visible angular radius on the globe
+    # Half the angular width visible from the camera altitude:
+    h = np.linalg.norm(camera_pos)
+    theta = np.degrees(np.arccos(R / h))  # horizon angle
+    fov_y = np.radians(fov_y_deg)
+    fov_x = np.arctan(np.tan(fov_y / 2) * aspect) * 2
+    half_angle = np.degrees(fov_y / 2) + theta * 0.5
+
+    lat_extent = half_angle
+    lon_extent = half_angle * aspect
+
+    return (
+        lat0 - lat_extent,
+        lat0 + lat_extent,
+        lon0 - lon_extent,
+        lon0 + lon_extent,
+    )
+
 
 # ----------------- Utility -----------------
 def clamp(a,b,c): return max(b, min(c, a))
@@ -98,9 +135,6 @@ class DiskLoader(threading.Thread):
             if os.path.exists(path):
                 try:
                     pil = Image.open(path).convert("RGB")
-                    draw = ImageDraw.Draw(pil)
-                    draw.rectangle([2,2,110,48], fill=(255,255,255,120))
-                    draw.text((16,4), f"{z}/{x}/{y}", fill=(255,0,0), font=self.font)
                     np_img = np.asarray(pil, dtype=np.uint8)
                 except Exception as e:
                     print("disk loader: failed to open", path, e)
@@ -185,10 +219,6 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
         glLoadIdentity()
         gluPerspective(45, max(1, self.width()/self.height()), 0.1, 100)
 
-        #
-        #glScalef(-1.0, 1.0, 1.0)  # flip X axis
-        #glTranslatef(-1.0, 0.0, 0.0)
-        #
 
         glMatrixMode(GL_MODELVIEW)
         glLoadIdentity()
@@ -198,11 +228,8 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
 
         # zoom / blend
         zoom_float = clamp( (8-self.distance)/(8-1.2)*(MAX_Z-MIN_Z)+MIN_Z, MIN_Z, MAX_Z)
-        print (f'----------------> zoom: {zoom_float} <----------------')
         base_z = int(math.floor(zoom_float))
-        print (f'----------------> base_z: {base_z} <----------------')
         next_z = clamp(base_z+1, MIN_Z, MAX_Z)
-        print (f'-----------------> next_z: {next_z} <------------------')
         t = zoom_float - base_z
         blend = clamp((math.tanh((t*2-1)*BLEND_SHARPNESS)+1)/2, 0,1)
 
@@ -298,85 +325,71 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
         glColor4f(1.0,1.0,1.0,alpha)
 
         
-        if 1:
-            n_sub = 6  # you can increase for smoother curvature; can be adaptive by zoom
-            latitudes = np.linspace(lat0, lat1, n_sub+1)
-            longitudes = np.linspace(lon0, lon1, n_sub+1)
+        n_sub = 6  # you can increase for smoother curvature; can be adaptive by zoom
+        latitudes = np.linspace(lat0, lat1, n_sub+1)
+        longitudes = np.linspace(lon0, lon1, n_sub+1)
 
-            self.debug_mode = True
-            if self.debug_mode:
-                glDisable(GL_TEXTURE_2D)
-                glColor3f(1.0, 0.0, 0.0)  # red borders
-                glBegin(GL_LINE_LOOP)
-                for i in range(n_sub + 1):
-                    t = i / n_sub
-                    lat_a = lat0 + (lat1 - lat0) * t
-                    lon_a = lon0
-                    lon_b = lon1
-                    # bottom edge
-                    glVertex3f(*latlon_to_xyz(lat_a, lon_a))
-                for j in range(n_sub + 1):
-                    s = j / n_sub
-                    lon_a = lon0 + (lon1 - lon0) * s
-                    lat_a = lat1
-                    # right edge
-                    glVertex3f(*latlon_to_xyz(lat_a, lon_a))
-                for i in range(n_sub, -1, -1):
-                    t = i / n_sub
-                    lat_a = lat0 + (lat1 - lat0) * t
-                    lon_a = lon1
-                    lon_b = lon0
-                    # top edge
-                    glVertex3f(*latlon_to_xyz(lat_a, lon_a))
-                for j in range(n_sub, -1, -1):
-                    s = j / n_sub
-                    lon_a = lon0 + (lon1 - lon0) * s
-                    lat_a = lat0
-                    # left edge
-                    glVertex3f(*latlon_to_xyz(lat_a, lon_a))
-                glEnd()
-                glEnable(GL_TEXTURE_2D)
-                glColor3f(1, 1, 1)
-
-
-
-
-            for i in range(n_sub):
-                for j in range(n_sub):
-                    la0 = latitudes[i]; la1 = latitudes[i+1]
-                    lo0 = longitudes[j]; lo1 = longitudes[j+1]
-
-                    # standard UVs (u: 0->1 left->right; v: 1->0 top->bottom)
-                    t00 = (j / n_sub, 1 - i / n_sub)
-                    t01 = ((j+1) / n_sub, 1 - i / n_sub)
-                    t11 = ((j+1) / n_sub, 1 - (i+1) / n_sub)
-                    t10 = (j / n_sub, 1 - (i+1) / n_sub)
-
-                    v00 = latlon_to_xyz(la0, lo0)
-                    v01 = latlon_to_xyz(la0, lo1)
-                    v11 = latlon_to_xyz(la1, lo1)
-                    v10 = latlon_to_xyz(la1, lo0)
-
-                    glBegin(GL_QUADS)
-                    glTexCoord2f(*t00); glVertex3f(*v00)
-                    glTexCoord2f(*t01); glVertex3f(*v01)
-                    glTexCoord2f(*t11); glVertex3f(*v11)
-                    glTexCoord2f(*t10); glVertex3f(*v10)
-                    glEnd()
-
-        else:
-            glBegin(GL_QUADS)
-            corners = [
-                (lat0, lon0, 1.0, 1.0),
-                (lat0, lon1, 0.0, 1.0),
-                (lat1, lon1, 0.0, 0.0),
-                (lat1, lon0, 1.0, 0.0),
-            ]
-            for lat,lon,u,v in corners:
-                x,y,z = latlon_to_xyz(lat,lon)
-                glTexCoord2f(u,v)
-                glVertex3f(x,y,z)
+        self.debug_mode = True
+        if self.debug_mode:
+            glDisable(GL_TEXTURE_2D)
+            glColor3f(1.0, 0.0, 0.0)  # red borders
+            glBegin(GL_LINE_LOOP)
+            for i in range(n_sub + 1):
+                t = i / n_sub
+                lat_a = lat0 + (lat1 - lat0) * t
+                lon_a = lon0
+                lon_b = lon1
+                # bottom edge
+                glVertex3f(*latlon_to_xyz(lat_a, lon_a))
+            for j in range(n_sub + 1):
+                s = j / n_sub
+                lon_a = lon0 + (lon1 - lon0) * s
+                lat_a = lat1
+                # right edge
+                glVertex3f(*latlon_to_xyz(lat_a, lon_a))
+            for i in range(n_sub, -1, -1):
+                t = i / n_sub
+                lat_a = lat0 + (lat1 - lat0) * t
+                lon_a = lon1
+                lon_b = lon0
+                # top edge
+                glVertex3f(*latlon_to_xyz(lat_a, lon_a))
+            for j in range(n_sub, -1, -1):
+                s = j / n_sub
+                lon_a = lon0 + (lon1 - lon0) * s
+                lat_a = lat0
+                # left edge
+                glVertex3f(*latlon_to_xyz(lat_a, lon_a))
             glEnd()
+            glEnable(GL_TEXTURE_2D)
+            glColor3f(1, 1, 1)
+
+
+
+
+        for i in range(n_sub):
+            for j in range(n_sub):
+                la0 = latitudes[i]; la1 = latitudes[i+1]
+                lo0 = longitudes[j]; lo1 = longitudes[j+1]
+
+                # standard UVs (u: 0->1 left->right; v: 1->0 top->bottom)
+                t00 = (j / n_sub, 1 - i / n_sub)
+                t01 = ((j+1) / n_sub, 1 - i / n_sub)
+                t11 = ((j+1) / n_sub, 1 - (i+1) / n_sub)
+                t10 = (j / n_sub, 1 - (i+1) / n_sub)
+
+                v00 = latlon_to_xyz(la0, lo0)
+                v01 = latlon_to_xyz(la0, lo1)
+                v11 = latlon_to_xyz(la1, lo1)
+                v10 = latlon_to_xyz(la1, lo0)
+
+                glBegin(GL_QUADS)
+                glTexCoord2f(*t00); glVertex3f(*v00)
+                glTexCoord2f(*t01); glVertex3f(*v01)
+                glTexCoord2f(*t11); glVertex3f(*v11)
+                glTexCoord2f(*t10); glVertex3f(*v10)
+                glEnd()
+
         glBindTexture(GL_TEXTURE_2D,0)
         glColor4f(1.0,1.0,1.0,1.0)
         
