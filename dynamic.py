@@ -81,14 +81,23 @@ def approximate_visible_bbox(camera_pos, camera_dir, fov_y_deg, aspect):
 # ----------------- Utility -----------------
 def clamp(a,b,c): return max(b, min(c, a))
 
+# ORIG
 def latlon_to_xyz(lat, lon, R=1.0):
-    """Standard: lon positive east, lat positive north."""
     la = math.radians(lat)
-    lo = math.radians(lon)    # <--- NO negation here
+    lo = math.radians(-lon)  # ← flip sign to restore east-positive orientation
     x = R * math.cos(la) * math.cos(lo)
     y = R * math.sin(la)
     z = R * math.cos(la) * math.sin(lo)
     return x, y, z
+
+##def other_latlon_to_xyz(lat, lon, R=1.0):
+##    """Standard: lon positive east, lat positive north."""
+##    la = math.radians(lat)
+##    lo = math.radians(lon)    # <--- NO negation here
+##    x = R * math.cos(la) * math.cos(lo)
+##    y = R * math.sin(la)
+##    z = R * math.cos(la) * math.sin(lo)
+##    return x, y, z
 
 def xyz_to_latlon(x, y, z):
     """Inverse of above: returns (lat, lon) with lon in (-180,180]."""
@@ -100,21 +109,13 @@ def xyz_to_latlon(x, y, z):
     if lon <= -180: lon += 360
     return lat, lon
 
-
-##def latlon_to_xyz(lat, lon, R=1.0):
-##    la = math.radians(lat)
-##    lo = math.radians(-lon)  # ← flip sign to restore east-positive orientation
-##    x = R * math.cos(la) * math.cos(lo)
-##    y = R * math.sin(la)
-##    z = R * math.cos(la) * math.sin(lo)
-##    return x, y, z
-
 def tile2lon(x, z):
      n = 2 ** z
      return x / n * 360.0 - 180.0
  
 def tile2lat(y, z):
     n = 2 ** z
+    ##y = n - 1 - y
     lat_rad = math.atan(math.sinh(math.pi * (1 - 2 * y / n)))
     return math.degrees(lat_rad)
 
@@ -255,7 +256,7 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
         x, y, z = point
         lat = math.degrees(math.asin(y))
         lon = -math.degrees(math.atan2(z, x))  # flip sign to match your conversion
-        return lat, lon
+        return -lat, -lon
 
 
 
@@ -267,7 +268,6 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
         glMatrixMode(GL_PROJECTION)
         glLoadIdentity()
         gluPerspective(45, max(1, self.width()/self.height()), 0.1, 100)
-
 
         glMatrixMode(GL_MODELVIEW)
         glLoadIdentity()
@@ -300,7 +300,7 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
 
 
         # draw next level tiles for blending
-        if next_z != base_z:
+        if 0 and next_z != base_z:
             n2 = 2**next_z
             for x in range(n2):
                 for y in range(n2):
@@ -417,6 +417,30 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
             glColor3f(1, 1, 1)
 
 
+        ##for i in range(n_sub):
+        ##    for j in range(n_sub):
+        ##        la0 = latitudes[i];   la1 = latitudes[i + 1]
+        ##        lo0 = longitudes[j];  lo1 = longitudes[j + 1]
+
+        ##        # standard UVs (u: 0->1 left->right; v: 1->0 top->bottom)
+        ##        t00 = (j / n_sub,     1 - i / n_sub)
+        ##        t01 = ((j + 1) / n_sub, 1 - i / n_sub)
+        ##        t11 = ((j + 1) / n_sub, 1 - (i + 1) / n_sub)
+        ##        t10 = (j / n_sub,     1 - (i + 1) / n_sub)
+
+        ##        # generate vertices (swap longitude order to fix winding)
+        ##        v00 = latlon_to_xyz(la0, lo1+180)
+        ##        v01 = latlon_to_xyz(la0, lo0+180)
+        ##        v11 = latlon_to_xyz(la1, lo0+180)
+        ##        v10 = latlon_to_xyz(la1, lo1+180)
+
+        ##        glBegin(GL_QUADS)
+        ##        glTexCoord2f(*t00); glVertex3f(*v00)
+        ##        glTexCoord2f(*t01); glVertex3f(*v01)
+        ##        glTexCoord2f(*t11); glVertex3f(*v11)
+        ##        glTexCoord2f(*t10); glVertex3f(*v10)
+        ##        glEnd()
+
 
 
         for i in range(n_sub):
@@ -430,10 +454,10 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
                 t11 = ((j+1) / n_sub, 1 - (i+1) / n_sub)
                 t10 = (j / n_sub, 1 - (i+1) / n_sub)
 
-                v00 = latlon_to_xyz(la0, lo0)
-                v01 = latlon_to_xyz(la0, lo1)
-                v11 = latlon_to_xyz(la1, lo1)
-                v10 = latlon_to_xyz(la1, lo0)
+                v00 = latlon_to_xyz(la0, lo0+180)
+                v01 = latlon_to_xyz(la0, lo1+180)
+                v11 = latlon_to_xyz(la1, lo1+180)
+                v10 = latlon_to_xyz(la1, lo0+180)
 
                 glBegin(GL_QUADS)
                 glTexCoord2f(*t00); glVertex3f(*v00)
@@ -454,8 +478,8 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
         dx = ev.x()-self.last_pos.x()
         dy = ev.y()-self.last_pos.y()
         if ev.buttons() & QtCore.Qt.LeftButton:
-            self.rot_y -= dx*0.5
-            self.rot_x -= dy*0.5
+            self.rot_y += dx*0.5
+            self.rot_x += dy*0.5
             self.update()
         self.last_pos=ev.pos()
     def wheelEvent(self, ev):
