@@ -77,6 +77,13 @@ def approximate_visible_bbox(camera_pos, camera_dir, fov_y_deg, aspect):
         lon0 + lon_extent,
     )
 
+def latlon_to_tile(lat, lon, zoom):
+    n = 2 ** zoom
+    xtile = int((lon + 180.0) / 360.0 * n)
+    lat_rad = math.radians(lat)
+    ytile = int((1.0 - math.log(math.tan(lat_rad) + 1 / math.cos(lat_rad)) / math.pi) / 2.0 * n)
+    return ytile, xtile
+
 
 # ----------------- Utility -----------------
 def clamp(a,b,c): return max(b, min(c, a))
@@ -257,10 +264,11 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
         lat = math.degrees(math.asin(y))
         lon = -math.degrees(math.atan2(z, x))  # flip sign to match your conversion
 
-
-        fov_y_deg = 10 
-        aspect = self.width() / self.height()
-        print (approximate_visible_bbox(camera_pos, dir, fov_y_deg, aspect))
+        #fov_y_deg = 10 
+        #aspect = self.width() / self.height()
+        #print (approximate_visible_bbox(camera_pos, dir, fov_y_deg, aspect))
+        #if lat < 0:
+        #    lat = abs(lat)
 
         return -lat, -lon
 
@@ -283,19 +291,17 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
 
         # zoom / blend
         zoom_float = clamp( (8-self.distance)/(8-1.2)*(MAX_Z-MIN_Z)+MIN_Z, MIN_Z, MAX_Z)
-        base_z = int(math.floor(zoom_float))
-        next_z = clamp(base_z+1, MIN_Z, MAX_Z)
-        t = zoom_float - base_z
+        level_z = int(math.floor(zoom_float)) +1
+        t = zoom_float - level_z
         blend = clamp((math.tanh((t*2-1)*BLEND_SHARPNESS)+1)/2, 0,1)
 
-        lat, lon = self.get_center_latlon()
-        print(f"Camera center: lat={lat:.2f}, lon={lon:.2f}")
-
-
-        # draw base tiles
+        # Always draw level3
+        base_z = 3
         n = 2**base_z
-        for x in range(n):
-            for y in range(n):
+        xs = np.arange(n)
+        ys = np.arange(n)
+        for x in xs:
+            for y in ys:
                 key = (base_z,x,y)
                 tex = self._get_texture_for_key(key)
                 if tex is None:
@@ -305,20 +311,55 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
                 lat0, lat1 = tile2lat(y+1, base_z), tile2lat(y, base_z)
                 self._draw_spherical_tile(lat0, lat1, lon0, lon1, tex, alpha=1.0)
 
+        
 
-        # draw next level tiles for blending
-        if 0 and next_z != base_z:
-            n2 = 2**next_z
-            for x in range(n2):
-                for y in range(n2):
-                    key = (next_z,x,y)
-                    tex = self._get_texture_for_key(key)
-                    if tex is None:
-                        self._ensure_request(key)
-                        continue
-                    lon0, lon1 = tile2lon(x, next_z), tile2lon(x+1, next_z)
-                    lat0, lat1 = tile2lat(y+1, next_z), tile2lat(y, next_z)
-                    self._draw_spherical_tile(lat0, lat1, lon0, lon1, tex, alpha=blend)
+        #--------------------------------------------
+        # Center lat lon as a test
+        lat, lon = self.get_center_latlon()
+        print(f"Camera center: lat={lat:.2f}, lon={lon:.2f}")
+
+        #-------------------------------------------
+        # TEST: can we figure out tiles on screen
+        current_tile_y, current_tile_x = latlon_to_tile(lat, lon, level_z)
+        print (current_tile_y, current_tile_x)
+
+        # draw base tiles
+        n = 2**level_z
+
+        # Scale x as we get near the poles
+        R = n//8
+        l = abs(lat)
+        XR = R
+        if l > 55: 
+            XR = n//2
+        elif l > 30: 
+            XR *=4
+        elif l > 20: 
+            XR *=2
+        else:
+            pass
+        xs = np.arange(current_tile_x - XR, current_tile_x + XR+1, 1)
+        xs[xs < 0] += n
+        xs[xs >= n] -= n
+        xs = np.unique(xs)
+
+        ys = np.arange(current_tile_y - R, current_tile_y + R+1, 1)
+        ys[ys < 0] += n
+        ys[ys >= n] -= n
+        # END TEST
+
+
+        for x in xs:
+            for y in ys:
+                key = (level_z,x,y)
+                tex = self._get_texture_for_key(key)
+                if tex is None:
+                    self._ensure_request(key)
+                    continue
+                lon0, lon1 = tile2lon(x, level_z), tile2lon(x+1, level_z)
+                lat0, lat1 = tile2lat(y+1, level_z), tile2lat(y, level_z)
+                self._draw_spherical_tile(lat0, lat1, lon0, lon1, tex, alpha=1.0)
+
 
     # ----------------- pending/result handling -----------------
     def _transfer_results_to_pending(self):
