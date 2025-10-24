@@ -256,6 +256,12 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
         x, y, z = point
         lat = math.degrees(math.asin(y))
         lon = -math.degrees(math.atan2(z, x))  # flip sign to match your conversion
+
+
+        fov_y_deg = 10 
+        aspect = self.width() / self.height()
+        print (approximate_visible_bbox(camera_pos, dir, fov_y_deg, aspect))
+
         return -lat, -lon
 
 
@@ -284,6 +290,7 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
 
         lat, lon = self.get_center_latlon()
         print(f"Camera center: lat={lat:.2f}, lon={lon:.2f}")
+
 
         # draw base tiles
         n = 2**base_z
