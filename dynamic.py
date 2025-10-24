@@ -82,12 +82,32 @@ def approximate_visible_bbox(camera_pos, camera_dir, fov_y_deg, aspect):
 def clamp(a,b,c): return max(b, min(c, a))
 
 def latlon_to_xyz(lat, lon, R=1.0):
+    """Standard: lon positive east, lat positive north."""
     la = math.radians(lat)
-    lo = math.radians(-lon)  # ← flip sign to restore east-positive orientation
+    lo = math.radians(lon)    # <--- NO negation here
     x = R * math.cos(la) * math.cos(lo)
     y = R * math.sin(la)
     z = R * math.cos(la) * math.sin(lo)
     return x, y, z
+
+def xyz_to_latlon(x, y, z):
+    """Inverse of above: returns (lat, lon) with lon in (-180,180]."""
+    r = math.sqrt(x*x + y*y + z*z)
+    lat = math.degrees(math.asin(y / r))
+    lon = math.degrees(math.atan2(z, x))
+    # normalize lon to (-180,180]
+    if lon > 180: lon -= 360
+    if lon <= -180: lon += 360
+    return lat, lon
+
+
+##def latlon_to_xyz(lat, lon, R=1.0):
+##    la = math.radians(lat)
+##    lo = math.radians(-lon)  # ← flip sign to restore east-positive orientation
+##    x = R * math.cos(la) * math.cos(lo)
+##    y = R * math.sin(la)
+##    z = R * math.cos(la) * math.sin(lo)
+##    return x, y, z
 
 def tile2lon(x, z):
      n = 2 ** z
@@ -167,8 +187,8 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
     def __init__(self):
         super().__init__()
         self.setMinimumSize(900,600)
-        self.rot_x = -30.0
-        self.rot_y = -90.0
+        self.rot_x = 0.0
+        self.rot_y = 90.0
         self.distance = 2.8
         self.last_pos = None
 
@@ -210,6 +230,35 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
     def resizeGL(self, w, h):
         glViewport(0,0,w,h)
 
+    def get_center_latlon(self):
+        # Compute camera position in world coords
+        rx = math.radians(self.rot_x)
+        ry = math.radians(self.rot_y)
+        cx = self.distance * math.sin(ry) * math.cos(rx)
+        cy = -self.distance * math.sin(rx)
+        cz = self.distance * math.cos(ry) * math.cos(rx)
+        camera_pos = np.array([cx, cy, cz], dtype=float)
+
+        # Direction vector toward origin
+        dir = -camera_pos / np.linalg.norm(camera_pos)
+
+        # Ray-sphere intersection (R = 1)
+        a = np.dot(dir, dir)
+        b = 2 * np.dot(camera_pos, dir)
+        c = np.dot(camera_pos, camera_pos) - 1
+        disc = b*b - 4*a*c
+        if disc < 0:
+            return None
+        t = (-b - math.sqrt(disc)) / (2*a)
+        point = camera_pos + t * dir
+
+        x, y, z = point
+        lat = math.degrees(math.asin(y))
+        lon = -math.degrees(math.atan2(z, x))  # flip sign to match your conversion
+        return lat, lon
+
+
+
     def paintGL(self):
         self.makeCurrent()
         self._upload_pending_textures()
@@ -232,6 +281,9 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
         next_z = clamp(base_z+1, MIN_Z, MAX_Z)
         t = zoom_float - base_z
         blend = clamp((math.tanh((t*2-1)*BLEND_SHARPNESS)+1)/2, 0,1)
+
+        lat, lon = self.get_center_latlon()
+        print(f"Camera center: lat={lat:.2f}, lon={lon:.2f}")
 
         # draw base tiles
         n = 2**base_z
@@ -402,8 +454,8 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
         dx = ev.x()-self.last_pos.x()
         dy = ev.y()-self.last_pos.y()
         if ev.buttons() & QtCore.Qt.LeftButton:
-            self.rot_y += dx*0.5
-            self.rot_x += dy*0.5
+            self.rot_y -= dx*0.5
+            self.rot_x -= dy*0.5
             self.update()
         self.last_pos=ev.pos()
     def wheelEvent(self, ev):
