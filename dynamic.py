@@ -31,7 +31,7 @@ USER_AGENT = "pyvista-globe-example/1.0 (your_email@example.com)"  # set a sensi
 CACHE_ROOT = "./cache"
 TILE_SIZE = 256
 MIN_Z = 2
-MAX_Z = 5    # set to highest zoom level you have in cache
+MAX_Z = 6    # set to highest zoom level you have in cache
 MAX_GPU_TEXTURES = 2048
 
 # LOD blending params
@@ -90,6 +90,7 @@ def clamp(a,b,c): return max(b, min(c, a))
 
 # ORIG
 def latlon_to_xyz(lat, lon, R=1.0):
+    lon += 180
     la = math.radians(lat)
     lo = math.radians(-lon)  # ← flip sign to restore east-positive orientation
     x = R * math.cos(la) * math.cos(lo)
@@ -290,10 +291,20 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
         glRotatef(self.rot_y,0,1,0)
 
         # zoom / blend
-        zoom_float = clamp( (8-self.distance)/(8-1.2)*(MAX_Z-MIN_Z)+MIN_Z, MIN_Z, MAX_Z)
-        level_z = int(math.floor(zoom_float)) +1
-        t = zoom_float - level_z
-        blend = clamp((math.tanh((t*2-1)*BLEND_SHARPNESS)+1)/2, 0,1)
+        ## TODO: write a better level - it should just be a function of distance, not min z max z
+        #zoom_float = clamp( (8-self.distance)/(8-1.2)*(MAX_Z-MIN_Z)+MIN_Z, MIN_Z, MAX_Z)
+        distance = self.distance
+        if distance > 3: 
+            level_z = 3
+        elif distance > 2.6:
+            level_z = 4
+        elif distance > 1.4:
+            level_z = 5
+        else:
+            level_z = 6
+
+        print ("distance: ", self.distance)
+        #level_z = int(math.floor(zoom_float)) 
 
         # Always draw level3
         base_z = 3
@@ -326,8 +337,18 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
         # draw base tiles
         n = 2**level_z
 
+        #---------------------------------------------------
+        # estimate a list of tiles that are on screen
+        #  - box wit radius R
+        #  - if near a pole, make X extent bigger
+        #  - handle wrap conditions
+        #
+        # TODO:
+        #  - these should go to a thread requesting tiles
+        #  - remove tiles that are not on screen
+        #------------------------------------------------
         # Scale x as we get near the poles
-        R = n//8
+        R = 3
         l = abs(lat)
         XR = R
         if l > 55: 
@@ -339,13 +360,14 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
         else:
             pass
         xs = np.arange(current_tile_x - XR, current_tile_x + XR+1, 1)
-        xs[xs < 0] += n
-        xs[xs >= n] -= n
+        xs[xs < 0] += n # wrap
+        xs[xs >= n] -= n # wrap
         xs = np.unique(xs)
 
-        ys = np.arange(current_tile_y - R, current_tile_y + R+1, 1)
-        ys[ys < 0] += n
-        ys[ys >= n] -= n
+        ys = np.arange(current_tile_y - XR, current_tile_y + XR+1, 1)
+        ys[ys < 0] += n # wrap
+        ys[ys >= n] -= n # 2rap
+        ys = np.unique(ys)
         # END TEST
 
 
@@ -360,6 +382,22 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
                 lat0, lat1 = tile2lat(y+1, level_z), tile2lat(y, level_z)
                 self._draw_spherical_tile(lat0, lat1, lon0, lon1, tex, alpha=1.0)
 
+        #
+        self.debug_place_markers()
+
+    def debug_place_markers(self):
+        tests = [ (42.5, -70.8, "Boston") ]
+        for lat, lon, label in tests:
+            x,y,z = latlon_to_xyz(lat, lon)   # use the corrected function
+            glPushMatrix()
+            glTranslatef(x,y,z)
+            # small marker sphere
+            quad = gluNewQuadric()
+            glColor3f(1.0, 0.0, 0.0)
+            gluSphere(quad, 0.01, 8, 6)
+            gluDeleteQuadric(quad)
+            glPopMatrix()
+            # (optionally draw label using your existing text overlay)
 
     # ----------------- pending/result handling -----------------
     def _transfer_results_to_pending(self):
@@ -465,32 +503,6 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
             glColor3f(1, 1, 1)
 
 
-        ##for i in range(n_sub):
-        ##    for j in range(n_sub):
-        ##        la0 = latitudes[i];   la1 = latitudes[i + 1]
-        ##        lo0 = longitudes[j];  lo1 = longitudes[j + 1]
-
-        ##        # standard UVs (u: 0->1 left->right; v: 1->0 top->bottom)
-        ##        t00 = (j / n_sub,     1 - i / n_sub)
-        ##        t01 = ((j + 1) / n_sub, 1 - i / n_sub)
-        ##        t11 = ((j + 1) / n_sub, 1 - (i + 1) / n_sub)
-        ##        t10 = (j / n_sub,     1 - (i + 1) / n_sub)
-
-        ##        # generate vertices (swap longitude order to fix winding)
-        ##        v00 = latlon_to_xyz(la0, lo1+180)
-        ##        v01 = latlon_to_xyz(la0, lo0+180)
-        ##        v11 = latlon_to_xyz(la1, lo0+180)
-        ##        v10 = latlon_to_xyz(la1, lo1+180)
-
-        ##        glBegin(GL_QUADS)
-        ##        glTexCoord2f(*t00); glVertex3f(*v00)
-        ##        glTexCoord2f(*t01); glVertex3f(*v01)
-        ##        glTexCoord2f(*t11); glVertex3f(*v11)
-        ##        glTexCoord2f(*t10); glVertex3f(*v10)
-        ##        glEnd()
-
-
-
         for i in range(n_sub):
             for j in range(n_sub):
                 la0 = latitudes[i]; la1 = latitudes[i+1]
@@ -502,10 +514,10 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
                 t11 = ((j+1) / n_sub, 1 - (i+1) / n_sub)
                 t10 = (j / n_sub, 1 - (i+1) / n_sub)
 
-                v00 = latlon_to_xyz(la0, lo0+180)
-                v01 = latlon_to_xyz(la0, lo1+180)
-                v11 = latlon_to_xyz(la1, lo1+180)
-                v10 = latlon_to_xyz(la1, lo0+180)
+                v00 = latlon_to_xyz(la0, lo0)
+                v01 = latlon_to_xyz(la0, lo1)
+                v11 = latlon_to_xyz(la1, lo1)
+                v10 = latlon_to_xyz(la1, lo0)
 
                 glBegin(GL_QUADS)
                 glTexCoord2f(*t00); glVertex3f(*v00)
@@ -522,6 +534,7 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
     # ----------------- interaction -----------------
     def mousePressEvent(self, ev): self.last_pos = ev.pos()
     def mouseMoveEvent(self, ev):
+        # TODO - scale how much this moves based on zoom level
         if self.last_pos is None: self.last_pos=ev.pos(); return
         dx = ev.x()-self.last_pos.x()
         dy = ev.y()-self.last_pos.y()
@@ -545,6 +558,7 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
 
 # ----------------- main -----------------
 if __name__=="__main__":
+    # TODO - remove available cache logic - was temporary
     os.makedirs(CACHE_ROOT, exist_ok=True)
     available = {}
     for z in range(MIN_Z, MAX_Z+1):
