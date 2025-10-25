@@ -9,7 +9,7 @@
 #
 # Place tiles up to z=5 (or whatever you have) in that layout and run this script.
 
-import sys, os, math, threading, queue
+import sys, os, math, threading, queue, pprint
 from collections import OrderedDict
 import requests
 from io import BytesIO
@@ -19,6 +19,7 @@ from PIL import Image, ImageDraw, ImageFont
 import pathlib
 
 from PyQt5 import QtCore, QtWidgets, QtGui
+from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QThread
 #from PyQt5.QtOpenGL import QOpenGLWidget
 from PyQt5.QtWidgets import QApplication, QMainWindow, QOpenGLWidget
 from OpenGL.GL import *
@@ -26,7 +27,7 @@ from OpenGL.GLU import *
 
 # ----------------- Config -----------------
 
-DOWNLOAD_TIMEOUT = 3
+DOWNLOAD_TIMEOUT = 10
 TILE_URL = "https://tile.openstreetmap.org/{z}/{x}/{y}.png"  # common XYZ server (y top origin)
 USER_AGENT = "pyvista-globe-example/1.0 (your_email@example.com)"  # set a sensible UA
 CACHE_ROOT = "./cache"
@@ -34,9 +35,6 @@ TILE_SIZE = 256
 MIN_Z = 2
 MAX_Z = 8    # set to highest zoom level you have in cache
 MAX_GPU_TEXTURES = 2048
-
-# LOD blending params
-BLEND_SHARPNESS = 3.0
 
 # Checkerboard fallback
 CHECKER_COLOR_A = 200
@@ -131,16 +129,16 @@ def tile2lat(y, z):
 def tile_path(z,x,y):
     return os.path.join(CACHE_ROOT, str(z), str(x), f"{y}.png")
 
-def make_checkerboard(size=TILE_SIZE, squares=8):
-    arr = np.zeros((size,size,3), dtype=np.uint8)
-    s = size//squares
-    for yy in range(squares):
-        for xx in range(squares):
-            color = CHECKER_COLOR_A if (xx+yy)%2 else CHECKER_COLOR_B
-            arr[yy*s:(yy+1)*s, xx*s:(xx+1)*s, :] = color
-    return arr
-
-CHECKER = make_checkerboard()
+##def make_checkerboard(size=TILE_SIZE, squares=8):
+##    arr = np.zeros((size,size,3), dtype=np.uint8)
+##    s = size//squares
+##    for yy in range(squares):
+##        for xx in range(squares):
+##            color = CHECKER_COLOR_A if (xx+yy)%2 else CHECKER_COLOR_B
+##            arr[yy*s:(yy+1)*s, xx*s:(xx+1)*s, :] = color
+##    return arr
+##
+##CHECKER = make_checkerboard()
 
 # ----------------- Disk loader worker -----------------
 class DiskLoader(threading.Thread):
@@ -166,13 +164,16 @@ class DiskLoader(threading.Thread):
                 # download fot later
                 url = TILE_URL.format(z=z, x=x, y=y)
                 print (f"fetching: {url}")
-                s = requests.Session()
-                s.headers.update({"User-Agent": USER_AGENT})
-                resp = s.get(url, timeout=DOWNLOAD_TIMEOUT)
-                img = Image.open(BytesIO(resp.content)).convert("RGBA")
-                p = pathlib.Path(path)
-                p.parent.mkdir(parents=True, exist_ok=True)
-                img.save(p)
+                try:
+                    s = requests.Session()
+                    s.headers.update({"User-Agent": USER_AGENT})
+                    resp = s.get(url, timeout=DOWNLOAD_TIMEOUT)
+                    img = Image.open(BytesIO(resp.content)).convert("RGBA")
+                    p = pathlib.Path(path)
+                    p.parent.mkdir(parents=True, exist_ok=True)
+                    img.save(p)
+                except Exception as err:
+                    continue
 
             try:
                 pil = Image.open(path).convert("RGB")
@@ -189,6 +190,7 @@ class DiskLoader(threading.Thread):
 
 # ----------------- GL widget -----------------
 class GlobeOfflineTileAligned(QOpenGLWidget):
+    infoSig = pyqtSignal(dict)
     def __init__(self):
         super().__init__()
         self.setMinimumSize(900,600)
@@ -321,7 +323,6 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
                 lon0, lon1 = tile2lon(x, base_z), tile2lon(x+1, base_z)
                 lat0, lat1 = tile2lat(y+1, base_z), tile2lat(y, base_z)
                 self._draw_spherical_tile(lat0, lat1, lon0, lon1, tex, alpha=1.0)
-
         
 
         #--------------------------------------------
@@ -359,6 +360,8 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
             XR *=2
         else:
             pass
+
+        XR = min(n//2, XR)
         xs = np.arange(current_tile_x - XR, current_tile_x + XR+1, 1)
         xs[xs < 0] += n # wrap
         xs[xs >= n] -= n # wrap
@@ -377,6 +380,8 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
                 tex = self._get_texture_for_key(key)
                 if tex is None:
                     self._ensure_request(key)
+                    #if key[1] < 0 or key[0] < 0:
+                    #    import ipdb; ipdb.set_trace()
                     continue
                 lon0, lon1 = tile2lon(x, level_z), tile2lon(x+1, level_z)
                 lat0, lat1 = tile2lat(y+1, level_z), tile2lat(y, level_z)
@@ -435,13 +440,16 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
             glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, w,h,0,GL_RGB,GL_UNSIGNED_BYTE, arr)
             glGenerateMipmap(GL_TEXTURE_2D)
             glBindTexture(GL_TEXTURE_2D,0)
+            # replace previous texture
             if key in self.textures:
                 old = self.textures.pop(key)
                 try: glDeleteTextures([old])
                 except: pass
             self.textures[key] = texid
+            # pruning
             while len(self.textures) > self.max_gpu_textures:
                 oldk, oldtex = self.textures.popitem(last=False)
+                print (f"pruning {oldk}")
                 try: glDeleteTextures([oldtex])
                 except: pass
 
@@ -545,6 +553,7 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
             self.rot_x += dy*3/self.zoom_level
             self.update()
         self.last_pos=ev.pos()
+        self.infoSig.emit({'level' : self.zoom_level} )
     def wheelEvent(self, ev):
         delta = ev.angleDelta().y()/120.0
         self.distance -= delta*0.35
@@ -558,12 +567,29 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
         try: self.stop_event.set()
         except: pass
 
+class MainWindow(QtWidgets.QWidget):
+    def __init__(self):
+        QtWidgets.QMainWindow.__init__(self)
+        hbox = QtWidgets.QHBoxLayout()
+        vbox = QtWidgets.QVBoxLayout()
+        self.text = QtWidgets.QLabel('Label')
+        vbox.addWidget(self.text)
+        hbox.addLayout(vbox)
+        self.globe = GlobeOfflineTileAligned()
+        hbox.addWidget(self.globe)
+        self.setLayout(hbox)
+        self.globe.infoSig.connect(self.on_window)
+        #self.setCentralWidget(self.hbox)
+    def on_window(self, info_dict: dict):
+        self.text.setText(pprint.pformat(info_dict))
+
+
 # ----------------- main -----------------
 if __name__=="__main__":
     os.makedirs(CACHE_ROOT, exist_ok=True)
 
     app = QtWidgets.QApplication(sys.argv)
-    win = GlobeOfflineTileAligned()
+    win = MainWindow() #GlobeOfflineTileAligned()
     win.setWindowTitle("Example Globe")
     win.resize(1200,800)
     win.show()
