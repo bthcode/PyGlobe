@@ -19,8 +19,8 @@ from PIL import Image, ImageDraw, ImageFont
 import pathlib
 
 from PyQt5 import QtCore, QtWidgets, QtGui
+from PyQt5.QtNetwork import QNetworkAccessManager
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QThread
-#from PyQt5.QtOpenGL import QOpenGLWidget
 from PyQt5.QtWidgets import QApplication, QMainWindow, QOpenGLWidget
 from OpenGL.GL import *
 from OpenGL.GLU import *
@@ -44,48 +44,12 @@ CHECKER_COLOR_A = 200
 CHECKER_COLOR_B = 60
 
 
-##def approximate_visible_bbox(camera_pos, camera_dir, fov_y_deg, aspect):
-##    """
-##    Approximate the visible lat/lon rectangle of the Earth.
-##    camera_pos: np.array([x, y, z]) in Earth-centered coordinates (meters or normalized radius)
-##    camera_dir: unit vector pointing toward the Earth center
-##    fov_y_deg: vertical field of view in degrees
-##    aspect: viewport width / height
-##    Returns (min_lat, max_lat, min_lon, max_lon)
-##    """
-##    R = 1.0  # assume unit sphere
-##
-##    # Find where the camera looks (intersection with Earth)
-##    d = -np.dot(camera_pos, camera_dir)
-##    closest_point = camera_pos + d * camera_dir
-##    lat0 = np.degrees(np.arcsin(closest_point[1] / R))
-##    lon0 = np.degrees(np.arctan2(closest_point[0], closest_point[2]))
-##
-##    # Approximate visible angular radius on the globe
-##    # Half the angular width visible from the camera altitude:
-##    h = np.linalg.norm(camera_pos)
-##    theta = np.degrees(np.arccos(R / h))  # horizon angle
-##    fov_y = np.radians(fov_y_deg)
-##    fov_x = np.arctan(np.tan(fov_y / 2) * aspect) * 2
-##    half_angle = np.degrees(fov_y / 2) + theta * 0.5
-##
-##    lat_extent = half_angle
-##    lon_extent = half_angle * aspect
-##
-##    return (
-##        lat0 - lat_extent,
-##        lat0 + lat_extent,
-##        lon0 - lon_extent,
-##        lon0 + lon_extent,
-##    )
-
 def latlon_to_tile(lat, lon, zoom):
     n = 2 ** zoom
     xtile = int((lon + 180.0) / 360.0 * n)
     lat_rad = math.radians(lat)
     ytile = int((1.0 - math.log(math.tan(lat_rad) + 1 / math.cos(lat_rad)) / math.pi) / 2.0 * n)
     return ytile, xtile
-
 
 # ----------------- Utility -----------------
 def clamp(a,b,c): return max(b, min(c, a))
@@ -99,15 +63,6 @@ def latlon_to_xyz(lat, lon, R=1.0):
     y = R * math.sin(la)
     z = R * math.cos(la) * math.sin(lo)
     return x, y, z
-
-##def other_latlon_to_xyz(lat, lon, R=1.0):
-##    """Standard: lon positive east, lat positive north."""
-##    la = math.radians(lat)
-##    lo = math.radians(lon)    # <--- NO negation here
-##    x = R * math.cos(la) * math.cos(lo)
-##    y = R * math.sin(la)
-##    z = R * math.cos(la) * math.sin(lo)
-##    return x, y, z
 
 def xyz_to_latlon(x, y, z):
     """Inverse of above: returns (lat, lon) with lon in (-180,180]."""
@@ -194,6 +149,24 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
         self.last_pos = None
 
         self.zoom_level = 3
+        self.center_lla = {'lat' : 0, 'lon': 0, 'alt': 0}
+
+        self.inflight = {}
+        #---------------------------------------------------------
+        # (TODO) Tile loading pipeline
+        #---------------------------------------------------------
+        # 1. gui puts in pending if it's not in there
+        # 2. if tile in cache, return it
+        # 2.1 if there is space in current_tile_nams, start a request
+        # 3. on tile returned, remove from current_tile_nams, start a new
+        #    3.1 SORT based on distance from current_lla
+        # 4. Prune textures based on distance from current_lla
+        self.screen_tiles = {}
+        self.pending_tiles = {}
+        self.current_tile_nams = {}
+        self.textures = OrderedDict()
+        self.base_textures = OrderedDict()
+
 
         # background loader queues
         self.req_q = queue.Queue()
@@ -202,12 +175,12 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
         self.loader = DiskLoader(self.req_q, self.res_q, self.stop_event)
         self.loader.start()
 
+        # Load base layer
+        self.load_base_textures()
+
         # pending uploads
         self.pending = {}
         self.pending_lock = threading.Lock()
-        self.textures = OrderedDict()
-        self.base_textures = OrderedDict()
-        self.inflight = {}
         self.max_gpu_textures = MAX_GPU_TEXTURES
         self.flip_horizontal_on_upload = False
 
@@ -215,6 +188,11 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
         self.poll_timer = QtCore.QTimer(self)
         self.poll_timer.timeout.connect(self._transfer_results_to_pending)
         self.poll_timer.start(40)
+
+        self.info_timer = QtCore.QTimer(self)
+        self.info_timer.timeout.connect(self.publish_display_info)
+        self.info_timer.start(1000)
+
 
     def closeEvent(self, ev):
         self.stop_event.set()
@@ -233,6 +211,11 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
 
     def resizeGL(self, w, h):
         glViewport(0,0,w,h)
+
+    def set_center_lla(self, lat, lon, alt=0):
+        self.center_lla = { 'lat' : lat,
+                            'lon' : lon,
+                            'alt' : alt }
 
     def get_center_latlon(self):
         # Compute camera position in world coords
@@ -262,6 +245,46 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
 
         return -lat, -lon
 
+    def load_base_textures(self):
+        '''Load lowest level '''
+        # Always draw level3
+        base_z = 3
+        n = 2**base_z
+        xs = np.arange(n)
+        ys = np.arange(n)
+        for x in xs:
+            for y in ys:
+                key = (base_z,x,y)
+                self._ensure_request(key)
+
+    def onTileDownloaded(self, z, x, y):
+        pass
+
+    def tile_in_cache(self):
+        return False
+
+    def load_tile(self, key):
+        pass
+
+    def requestTile(self, z, x, y):
+        key = (z,x,y)
+        #-----------------------------
+        # If tile exists, start load
+        #-----------------------------
+        if self.tile_in_cache(key):
+            TILE = self.load_tile(key)
+            return True
+
+        #-----------------------------
+        # Place in pending
+        #-----------------------------
+        if key not in self.pending_tiles:
+            pending_tiles[key] = 1
+        if len(self.current_tile_names) < NUM_DOWNLOADERS:
+            pass
+
+    def getTexture(self, z, x, y):
+        pass
 
 
     def paintGL(self):
@@ -279,111 +302,37 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
         glRotatef(self.rot_x,1,0,0)
         glRotatef(self.rot_y,0,1,0)
 
-        # zoom / blend
-        ## TODO: write a better level - it should just be a function of distance, not min z max z
-        ##   - it should also scale quadratically
-        distance = self.distance
-        if distance > 3: 
-            level_z = 3
-        elif distance > 1.5:
-            level_z = 4
-        elif distance > 1.3:
-            level_z = 5
-        elif distance > 1.2:
-            level_z = 6
-        else:
-            level_z = 7
 
-        self.zoom_level = level_z
+        #---------------------------------------------
+        # Base Layer
+        #---------------------------------------------
+        for key, tex in self.base_textures.items():
+            z = key[0]
+            x = key[1]
+            y = key[2]
+            lon0, lon1 = tile2lon(x, z), tile2lon(x+1, z)
+            lat0, lat1 = tile2lat(y+1, z), tile2lat(y, z)
+            self._draw_spherical_tile(lat0, lat1, lon0, lon1, tex, alpha=1.0)
 
-        #print ("distance: ", self.distance)
-        #level_z = int(math.floor(zoom_float)) 
+        #---------------------------------------------
+        # Current Layer, if available
+        #---------------------------------------------
+        for key in self.screen_tiles.keys():
+            level_z = key[0]
+            x = key[1]
+            y = key[2]
+            tex = self._get_texture_for_key(key)
+            if tex is None:
+                self._ensure_request(key)
+                continue
+            lon0, lon1 = tile2lon(x, level_z), tile2lon(x+1, level_z)
+            lat0, lat1 = tile2lat(y+1, level_z), tile2lat(y, level_z)
+            self._draw_spherical_tile(lat0, lat1, lon0, lon1, tex, alpha=1.0)
 
-        # Always draw level3
-        base_z = 3
-        n = 2**base_z
-        xs = np.arange(n)
-        ys = np.arange(n)
-        for x in xs:
-            for y in ys:
-                key = (base_z,x,y)
-                tex = self._get_texture_for_key(key)
-                if tex is None:
-                    #print (f"asking for {key}")
-                    self._ensure_request(key)
-                    continue
-                lon0, lon1 = tile2lon(x, base_z), tile2lon(x+1, base_z)
-                lat0, lat1 = tile2lat(y+1, base_z), tile2lat(y, base_z)
-                self._draw_spherical_tile(lat0, lat1, lon0, lon1, tex, alpha=1.0)
-        
-
-        #--------------------------------------------
-        # Center lat lon as a test
-        lat, lon = self.get_center_latlon()
-        #print(f"Camera center: lat={lat:.2f}, lon={lon:.2f}")
-
-        #-------------------------------------------
-        # TEST: can we figure out tiles on screen
-        current_tile_y, current_tile_x = latlon_to_tile(lat, lon, level_z)
-        #print (current_tile_y, current_tile_x)
-
-        # draw base tiles
-        n = 2**level_z
-
-        #---------------------------------------------------
-        # estimate a list of tiles that are on screen
-        #  - box wit radius R
-        #  - if near a pole, make X extent bigger
-        #  - handle wrap conditions
-        #
-        # TODO:
-        #  - these should go to a thread requesting tiles
-        #  - remove tiles that are not on screen
-        #------------------------------------------------
-        # Scale x as we get near the poles
-        R = 3
-        l = abs(lat)
-        XR = R
-        if l > 55: 
-            XR = n//2
-        elif l > 30: 
-            XR = 4
-        elif l > 20: 
-            XR = 7
-        else:
-            pass
-
-        XR = min(n//2, XR)
-        xs = np.arange(current_tile_x - XR, current_tile_x + XR+1, 1)
-        xs[xs < 0] += n # wrap
-        xs[xs >= n] -= n # wrap
-        xs = np.unique(xs)
-
-        ys = np.arange(current_tile_y - 3, current_tile_y + 3+1, 1)
-        ys[ys < 0] += n # wrap
-        ys[ys >= n] -= n # 2rap
-        ys = np.unique(ys)
-        # END TEST
-
-        #print (XR, xs, ys)
-
-        for x in xs:
-            for y in ys:
-                key = (level_z,x,y)
-                tex = self._get_texture_for_key(key)
-                if tex is None:
-                    self._ensure_request(key)
-                    #if key[1] < 0 or key[0] < 0:
-                    #    import ipdb; ipdb.set_trace()
-                    continue
-                lon0, lon1 = tile2lon(x, level_z), tile2lon(x+1, level_z)
-                lat0, lat1 = tile2lat(y+1, level_z), tile2lat(y, level_z)
-                self._draw_spherical_tile(lat0, lat1, lon0, lon1, tex, alpha=1.0)
-
-        #
         self.debug_place_markers()
 
     def debug_place_markers(self):
+        ''' Draw a test dot in boston '''
         tests = [ (42.5, -70.8, "Boston") ]
         for lat, lon, label in tests:
             x,y,z = latlon_to_xyz(lat, lon)   # use the corrected function
@@ -552,9 +501,83 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
         glColor4f(1.0,1.0,1.0,1.0)
         
 
+    def publish_display_info(self):
+        self.infoSig.emit({'level' : self.zoom_level,
+                           'center_lla' : self.center_lla} )
+
+    def updateScene(self):
+        # 3. Put those tiles *first* in the tile queue
+
+        # 1. Get current center point, zoom
+        distance = self.distance
+        if distance > 3: 
+            level_z = 3
+        elif distance > 1.5:
+            level_z = 4
+        elif distance > 1.3:
+            level_z = 5
+        elif distance > 1.2:
+            level_z = 6
+        else:
+            level_z = 7
+
+        self.zoom_level = level_z
+
+        lat, lon = self.get_center_latlon()
+        #current_tile_y, current_tile_x = latlon_to_tile(lat, lon, level_z)
+        #lat, lon = self.get_center_latlon()
+        #self.set_center_lla(lat, lon)
+        self.current_tile_y, self.current_tile_x = latlon_to_tile(lat, lon, level_z)
+
+        # 2. Get desired tile list
+        #---------------------------------------------------
+        # estimate a list of tiles that are on screen
+        #  - box wit radius R
+        #  - if near a pole, make X extent bigger
+        #  - handle wrap conditions
+        #
+        # TODO:
+        #  - these should go to a thread requesting tiles
+        #  - remove tiles that are not on screen
+        #------------------------------------------------
+        # Scale x as we get near the poles
+        R = 3
+        n = 2**self.zoom_level
+        l = abs(lat)
+        XR = R
+        if l > 55: 
+            XR = n//2
+        elif l > 30: 
+            XR = 4
+        elif l > 20: 
+            XR = 7
+        else:
+            pass
+
+        XR = min(n//2, XR)
+        xs = np.arange(self.current_tile_x - XR, self.current_tile_x + XR+1, 1)
+        xs[xs < 0] += n # wrap
+        xs[xs >= n] -= n # wrap
+        xs = np.unique(xs)
+
+        ys = np.arange(self.current_tile_y - 3, self.current_tile_y + 3+1, 1)
+        ys[ys < 0] += n # wrap
+        ys[ys >= n] -= n # 2rap
+        ys = np.unique(ys)
+        # END TEST
+        self.screen_tiles.clear()
+        for x in xs:
+            for y in ys:
+                key = (self.zoom_level, x, y)
+                self.screen_tiles[(key)] = True
+
+        #for key, val in self.scrren_tiles.keys():
+        #    pass
+        #print (self.screen_tiles)
 
     # ----------------- interaction -----------------
-    def mousePressEvent(self, ev): self.last_pos = ev.pos()
+    def mousePressEvent(self, ev): 
+        self.last_pos = ev.pos()
     def mouseMoveEvent(self, ev):
         # TODO - scale how much this moves based on zoom level
         if self.last_pos is None: self.last_pos=ev.pos(); return
@@ -563,15 +586,15 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
         if ev.buttons() & QtCore.Qt.LeftButton:
             self.rot_y += dx*3/self.zoom_level
             self.rot_x += dy*3/self.zoom_level
+            self.updateScene()
             self.update()
         self.last_pos=ev.pos()
-        self.infoSig.emit({'level' : self.zoom_level} )
     def wheelEvent(self, ev):
         delta = ev.angleDelta().y()/120.0
         self.distance -= delta*0.35
         self.distance = clamp(self.distance, 1.1, 8.0)
+        self.updateScene()
         self.update()
-        self.infoSig.emit({'level' : self.zoom_level} )
     def keyPressEvent(self, ev):
         if ev.key()==QtCore.Qt.Key_Escape: self.close()
         else: super().keyPressEvent(ev)
@@ -592,9 +615,13 @@ class MainWindow(QtWidgets.QWidget):
         hbox.addWidget(self.globe)
         self.setLayout(hbox)
         self.globe.infoSig.connect(self.on_window)
-        #self.setCentralWidget(self.hbox)
+        self.globe.updateScene()
     def on_window(self, info_dict: dict):
-        self.text.setText(pprint.pformat(info_dict))
+        s = f"Level: {info_dict['level']}\n"
+        s += f"Lat: {info_dict['center_lla']['lat']:.2f}\n"
+        s += f"Lon: {info_dict['center_lla']['lon']:.2f}\n"
+        s += f"Alt: {info_dict['center_lla']['alt']:.2f}\n"
+        self.text.setText(s)
 
 
 # ----------------- main -----------------
