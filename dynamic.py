@@ -205,6 +205,7 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
         self.pending = {}
         self.pending_lock = threading.Lock()
         self.textures = OrderedDict()
+        self.base_textures = OrderedDict()
         self.inflight = {}
         self.max_gpu_textures = MAX_GPU_TEXTURES
         self.flip_horizontal_on_upload = False
@@ -437,7 +438,17 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
                 old = self.textures.pop(key)
                 try: glDeleteTextures([old])
                 except: pass
-            self.textures[key] = texid
+            if key in self.base_textures:
+                old = self.base_textures.pop(key)
+                try: glDeleteTextures([old])
+                except: pass
+
+            # Protected base layer
+            if key[0] == 3:
+                self.base_textures[key] = texid
+            # Dynamic zoom layers
+            else:
+                self.textures[key] = texid
             # pruning
             while len(self.textures) > self.max_gpu_textures:
                 oldk, oldtex = self.textures.popitem(last=False)
@@ -447,7 +458,10 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
 
     # ----------------- texture & request helpers -----------------
     def _get_texture_for_key(self, key):
-        return self.textures.get(key)
+        if key[0] == 3:
+            return self.base_textures.get(key)
+        else:
+            return self.textures.get(key)
 
     def _ensure_request(self,key):
         #print (f"looking for {key}")
