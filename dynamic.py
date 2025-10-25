@@ -29,12 +29,14 @@ from OpenGL.GLU import *
 
 DOWNLOAD_TIMEOUT = 10
 TILE_URL = "https://tile.openstreetmap.org/{z}/{x}/{y}.png"  # common XYZ server (y top origin)
+#TILE_URL = "https://api.maptiler.com/maps/hybrid/{z}/{x}/{y}.jpg?key=oqjJNjlgIemNU8MjyXFj"
+
 USER_AGENT = "pyvista-globe-example/1.0 (your_email@example.com)"  # set a sensible UA
-CACHE_ROOT = "./cache"
+CACHE_ROOT = "./osm.cache"
 TILE_SIZE = 256
 MIN_Z = 2
-MAX_Z = 8    # set to highest zoom level you have in cache
-MAX_GPU_TEXTURES = 2048
+MAX_Z = 9    # set to highest zoom level you have in cache
+MAX_GPU_TEXTURES = 512
 
 # Checkerboard fallback
 CHECKER_COLOR_A = 200
@@ -129,17 +131,6 @@ def tile2lat(y, z):
 def tile_path(z,x,y):
     return os.path.join(CACHE_ROOT, str(z), str(x), f"{y}.png")
 
-##def make_checkerboard(size=TILE_SIZE, squares=8):
-##    arr = np.zeros((size,size,3), dtype=np.uint8)
-##    s = size//squares
-##    for yy in range(squares):
-##        for xx in range(squares):
-##            color = CHECKER_COLOR_A if (xx+yy)%2 else CHECKER_COLOR_B
-##            arr[yy*s:(yy+1)*s, xx*s:(xx+1)*s, :] = color
-##    return arr
-##
-##CHECKER = make_checkerboard()
-
 # ----------------- Disk loader worker -----------------
 class DiskLoader(threading.Thread):
     def __init__(self, req_q, res_q, stop_event):
@@ -179,7 +170,9 @@ class DiskLoader(threading.Thread):
                 pil = Image.open(path).convert("RGB")
                 np_img = np.asarray(pil, dtype=np.uint8)
             except Exception as e:
+                np_img = None
                 print("disk loader: failed to open", path, e)
+                continue
 
 
             # keep exactly 3 channels
@@ -212,7 +205,7 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
         self.pending = {}
         self.pending_lock = threading.Lock()
         self.textures = OrderedDict()
-        self.inflight = set()
+        self.inflight = {}
         self.max_gpu_textures = MAX_GPU_TEXTURES
         self.flip_horizontal_on_upload = False
 
@@ -292,16 +285,12 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
             level_z = 3
         elif distance > 1.5:
             level_z = 4
-        elif distance > 1.4:
+        elif distance > 1.3:
             level_z = 5
         elif distance > 1.2:
             level_z = 6
-        elif distance > 1.1: 
-            level_z = 7
-        elif distance > 1.05:
-            level_z = 8
         else:
-            level_z = 8
+            level_z = 7
 
         self.zoom_level = level_z
 
@@ -318,6 +307,7 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
                 key = (base_z,x,y)
                 tex = self._get_texture_for_key(key)
                 if tex is None:
+                    #print (f"asking for {key}")
                     self._ensure_request(key)
                     continue
                 lon0, lon1 = tile2lon(x, base_z), tile2lon(x+1, base_z)
@@ -355,9 +345,9 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
         if l > 55: 
             XR = n//2
         elif l > 30: 
-            XR *=4
+            XR = 4
         elif l > 20: 
-            XR *=2
+            XR = 7
         else:
             pass
 
@@ -367,12 +357,13 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
         xs[xs >= n] -= n # wrap
         xs = np.unique(xs)
 
-        ys = np.arange(current_tile_y - XR, current_tile_y + XR+1, 1)
+        ys = np.arange(current_tile_y - 3, current_tile_y + 3+1, 1)
         ys[ys < 0] += n # wrap
         ys[ys >= n] -= n # 2rap
         ys = np.unique(ys)
         # END TEST
 
+        #print (XR, xs, ys)
 
         for x in xs:
             for y in ys:
@@ -412,6 +403,7 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
             except queue.Empty:
                 break
             key = (z,x,y)
+            del self.inflight[key]
             with self.pending_lock:
                 self.pending[key] = arr
             self.res_q.task_done()
@@ -449,20 +441,25 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
             # pruning
             while len(self.textures) > self.max_gpu_textures:
                 oldk, oldtex = self.textures.popitem(last=False)
-                print (f"pruning {oldk}")
+                #print (f"pruning {oldk}")
                 try: glDeleteTextures([oldtex])
                 except: pass
 
     # ----------------- texture & request helpers -----------------
     def _get_texture_for_key(self, key):
         return self.textures.get(key)
+
     def _ensure_request(self,key):
+        #print (f"looking for {key}")
         if key in self.inflight: 
+            #print ("..in flight")
             return
         z,x,y = key
         if z<MIN_Z or z>MAX_Z: 
+            #print (".. bad z")
             return
-        self.inflight.add(key)
+        #print ("..adding to q")
+        self.inflight[key] = True
         self.req_q.put(key)
 
     # ----------------- drawing helpers -----------------
@@ -559,6 +556,7 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
         self.distance -= delta*0.35
         self.distance = clamp(self.distance, 1.1, 8.0)
         self.update()
+        self.infoSig.emit({'level' : self.zoom_level} )
     def keyPressEvent(self, ev):
         if ev.key()==QtCore.Qt.Key_Escape: self.close()
         else: super().keyPressEvent(ev)
