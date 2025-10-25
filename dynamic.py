@@ -12,11 +12,11 @@
 import sys, os, math, threading, queue
 from collections import OrderedDict
 import requests
-timeout = 3
 from io import BytesIO
 
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
+import pathlib
 
 from PyQt5 import QtCore, QtWidgets, QtGui
 #from PyQt5.QtOpenGL import QOpenGLWidget
@@ -26,12 +26,13 @@ from OpenGL.GLU import *
 
 # ----------------- Config -----------------
 
+DOWNLOAD_TIMEOUT = 3
 TILE_URL = "https://tile.openstreetmap.org/{z}/{x}/{y}.png"  # common XYZ server (y top origin)
 USER_AGENT = "pyvista-globe-example/1.0 (your_email@example.com)"  # set a sensible UA
 CACHE_ROOT = "./cache"
 TILE_SIZE = 256
 MIN_Z = 2
-MAX_Z = 6    # set to highest zoom level you have in cache
+MAX_Z = 8    # set to highest zoom level you have in cache
 MAX_GPU_TEXTURES = 2048
 
 # LOD blending params
@@ -42,40 +43,40 @@ CHECKER_COLOR_A = 200
 CHECKER_COLOR_B = 60
 
 
-def approximate_visible_bbox(camera_pos, camera_dir, fov_y_deg, aspect):
-    """
-    Approximate the visible lat/lon rectangle of the Earth.
-    camera_pos: np.array([x, y, z]) in Earth-centered coordinates (meters or normalized radius)
-    camera_dir: unit vector pointing toward the Earth center
-    fov_y_deg: vertical field of view in degrees
-    aspect: viewport width / height
-    Returns (min_lat, max_lat, min_lon, max_lon)
-    """
-    R = 1.0  # assume unit sphere
-
-    # Find where the camera looks (intersection with Earth)
-    d = -np.dot(camera_pos, camera_dir)
-    closest_point = camera_pos + d * camera_dir
-    lat0 = np.degrees(np.arcsin(closest_point[1] / R))
-    lon0 = np.degrees(np.arctan2(closest_point[0], closest_point[2]))
-
-    # Approximate visible angular radius on the globe
-    # Half the angular width visible from the camera altitude:
-    h = np.linalg.norm(camera_pos)
-    theta = np.degrees(np.arccos(R / h))  # horizon angle
-    fov_y = np.radians(fov_y_deg)
-    fov_x = np.arctan(np.tan(fov_y / 2) * aspect) * 2
-    half_angle = np.degrees(fov_y / 2) + theta * 0.5
-
-    lat_extent = half_angle
-    lon_extent = half_angle * aspect
-
-    return (
-        lat0 - lat_extent,
-        lat0 + lat_extent,
-        lon0 - lon_extent,
-        lon0 + lon_extent,
-    )
+##def approximate_visible_bbox(camera_pos, camera_dir, fov_y_deg, aspect):
+##    """
+##    Approximate the visible lat/lon rectangle of the Earth.
+##    camera_pos: np.array([x, y, z]) in Earth-centered coordinates (meters or normalized radius)
+##    camera_dir: unit vector pointing toward the Earth center
+##    fov_y_deg: vertical field of view in degrees
+##    aspect: viewport width / height
+##    Returns (min_lat, max_lat, min_lon, max_lon)
+##    """
+##    R = 1.0  # assume unit sphere
+##
+##    # Find where the camera looks (intersection with Earth)
+##    d = -np.dot(camera_pos, camera_dir)
+##    closest_point = camera_pos + d * camera_dir
+##    lat0 = np.degrees(np.arcsin(closest_point[1] / R))
+##    lon0 = np.degrees(np.arctan2(closest_point[0], closest_point[2]))
+##
+##    # Approximate visible angular radius on the globe
+##    # Half the angular width visible from the camera altitude:
+##    h = np.linalg.norm(camera_pos)
+##    theta = np.degrees(np.arccos(R / h))  # horizon angle
+##    fov_y = np.radians(fov_y_deg)
+##    fov_x = np.arctan(np.tan(fov_y / 2) * aspect) * 2
+##    half_angle = np.degrees(fov_y / 2) + theta * 0.5
+##
+##    lat_extent = half_angle
+##    lon_extent = half_angle * aspect
+##
+##    return (
+##        lat0 - lat_extent,
+##        lat0 + lat_extent,
+##        lon0 - lon_extent,
+##        lon0 + lon_extent,
+##    )
 
 def latlon_to_tile(lat, lon, zoom):
     n = 2 ** zoom
@@ -161,30 +162,25 @@ class DiskLoader(threading.Thread):
                 continue
             np_img = None
             path = tile_path(z,x,y)
-            if os.path.exists(path):
-                try:
-                    pil = Image.open(path).convert("RGB")
-                    np_img = np.asarray(pil, dtype=np.uint8)
-                except Exception as e:
-                    print("disk loader: failed to open", path, e)
-            else:
-
+            if not os.path.exists(path):
                 # download fot later
                 url = TILE_URL.format(z=z, x=x, y=y)
+                print (f"fetching: {url}")
                 s = requests.Session()
                 s.headers.update({"User-Agent": USER_AGENT})
-                resp = s.get(url, timeout=timeout)
+                resp = s.get(url, timeout=DOWNLOAD_TIMEOUT)
                 img = Image.open(BytesIO(resp.content)).convert("RGBA")
-                import pathlib
                 p = pathlib.Path(path)
                 p.parent.mkdir(parents=True, exist_ok=True)
                 img.save(p)
 
-                arr = CHECKER.copy()
-                pil = Image.fromarray(arr)
-                draw = ImageDraw.Draw(pil)
-                draw.text((6,6), f"missing {z}/{x}/{y}", fill=(255,0,0), font=self.font)
+            try:
+                pil = Image.open(path).convert("RGB")
                 np_img = np.asarray(pil, dtype=np.uint8)
+            except Exception as e:
+                print("disk loader: failed to open", path, e)
+
+
             # keep exactly 3 channels
             if np_img.ndim == 3 and np_img.shape[2] > 3:
                 np_img = np_img[:,:,:3]
@@ -198,8 +194,10 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
         self.setMinimumSize(900,600)
         self.rot_x = 0.0
         self.rot_y = 90.0
-        self.distance = 2.8
+        self.distance = 3.2
         self.last_pos = None
+
+        self.zoom_level = 3
 
         # background loader queues
         self.req_q = queue.Queue()
@@ -249,27 +247,21 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
         camera_pos = np.array([cx, cy, cz], dtype=float)
 
         # Direction vector toward origin
-        dir = -camera_pos / np.linalg.norm(camera_pos)
+        camera_dir = -camera_pos / np.linalg.norm(camera_pos)
 
         # Ray-sphere intersection (R = 1)
-        a = np.dot(dir, dir)
-        b = 2 * np.dot(camera_pos, dir)
+        a = np.dot(camera_dir, camera_dir)
+        b = 2 * np.dot(camera_pos, camera_dir)
         c = np.dot(camera_pos, camera_pos) - 1
         disc = b*b - 4*a*c
         if disc < 0:
             return None
         t = (-b - math.sqrt(disc)) / (2*a)
-        point = camera_pos + t * dir
+        point = camera_pos + t * camera_dir
 
         x, y, z = point
         lat = math.degrees(math.asin(y))
         lon = -math.degrees(math.atan2(z, x))  # flip sign to match your conversion
-
-        #fov_y_deg = 10 
-        #aspect = self.width() / self.height()
-        #print (approximate_visible_bbox(camera_pos, dir, fov_y_deg, aspect))
-        #if lat < 0:
-        #    lat = abs(lat)
 
         return -lat, -lon
 
@@ -292,18 +284,26 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
 
         # zoom / blend
         ## TODO: write a better level - it should just be a function of distance, not min z max z
-        #zoom_float = clamp( (8-self.distance)/(8-1.2)*(MAX_Z-MIN_Z)+MIN_Z, MIN_Z, MAX_Z)
+        ##   - it should also scale quadratically
         distance = self.distance
         if distance > 3: 
             level_z = 3
-        elif distance > 2.6:
+        elif distance > 1.5:
             level_z = 4
         elif distance > 1.4:
             level_z = 5
-        else:
+        elif distance > 1.2:
             level_z = 6
+        elif distance > 1.1: 
+            level_z = 7
+        elif distance > 1.05:
+            level_z = 8
+        else:
+            level_z = 8
 
-        print ("distance: ", self.distance)
+        self.zoom_level = level_z
+
+        #print ("distance: ", self.distance)
         #level_z = int(math.floor(zoom_float)) 
 
         # Always draw level3
@@ -327,12 +327,12 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
         #--------------------------------------------
         # Center lat lon as a test
         lat, lon = self.get_center_latlon()
-        print(f"Camera center: lat={lat:.2f}, lon={lon:.2f}")
+        #print(f"Camera center: lat={lat:.2f}, lon={lon:.2f}")
 
         #-------------------------------------------
         # TEST: can we figure out tiles on screen
         current_tile_y, current_tile_x = latlon_to_tile(lat, lon, level_z)
-        print (current_tile_y, current_tile_x)
+        #print (current_tile_y, current_tile_x)
 
         # draw base tiles
         n = 2**level_z
@@ -449,9 +449,11 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
     def _get_texture_for_key(self, key):
         return self.textures.get(key)
     def _ensure_request(self,key):
-        if key in self.inflight: return
+        if key in self.inflight: 
+            return
         z,x,y = key
-        if z<MIN_Z or z>MAX_Z: return
+        if z<MIN_Z or z>MAX_Z: 
+            return
         self.inflight.add(key)
         self.req_q.put(key)
 
@@ -539,14 +541,14 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
         dx = ev.x()-self.last_pos.x()
         dy = ev.y()-self.last_pos.y()
         if ev.buttons() & QtCore.Qt.LeftButton:
-            self.rot_y += dx*0.5
-            self.rot_x += dy*0.5
+            self.rot_y += dx*3/self.zoom_level
+            self.rot_x += dy*3/self.zoom_level
             self.update()
         self.last_pos=ev.pos()
     def wheelEvent(self, ev):
         delta = ev.angleDelta().y()/120.0
         self.distance -= delta*0.35
-        self.distance = clamp(self.distance, 1.2, 8.0)
+        self.distance = clamp(self.distance, 1.1, 8.0)
         self.update()
     def keyPressEvent(self, ev):
         if ev.key()==QtCore.Qt.Key_Escape: self.close()
@@ -558,19 +560,11 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
 
 # ----------------- main -----------------
 if __name__=="__main__":
-    # TODO - remove available cache logic - was temporary
     os.makedirs(CACHE_ROOT, exist_ok=True)
-    available = {}
-    for z in range(MIN_Z, MAX_Z+1):
-        zd = os.path.join(CACHE_ROOT,str(z))
-        if os.path.isdir(zd):
-            available[z] = sum(len(files) for _,_,files in os.walk(zd))
-        else: available[z]=0
-    print("Cache availability (tiles found):", available)
 
     app = QtWidgets.QApplication(sys.argv)
     win = GlobeOfflineTileAligned()
-    win.setWindowTitle("Offline Globe — Tile-Aligned LOD")
+    win.setWindowTitle("Example Globe")
     win.resize(1200,800)
     win.show()
     sys.exit(app.exec_())
