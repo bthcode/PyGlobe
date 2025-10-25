@@ -28,10 +28,10 @@ from OpenGL.GLU import *
 # ----------------- Config -----------------
 
 DOWNLOAD_TIMEOUT = 10
-TILE_URL = "https://tile.openstreetmap.org/{z}/{x}/{y}.png"  # common XYZ server (y top origin)
-CACHE_ROOT= "./osm_cache"
-#TILE_URL = "https://api.maptiler.com/maps/hybrid/{z}/{x}/{y}.jpg?key=oqjJNjlgIemNU8MjyXFj"
-#CACHE_ROOT = "./sat_cache"
+#TILE_URL = "https://tile.openstreetmap.org/{z}/{x}/{y}.png"  # common XYZ server (y top origin)
+#CACHE_ROOT= "./osm_cache"
+TILE_URL = "https://api.maptiler.com/maps/hybrid/{z}/{x}/{y}.jpg?key=oqjJNjlgIemNU8MjyXFj"
+CACHE_ROOT = "./sat_cache"
 
 USER_AGENT = "pyvista-globe-example/1.0 (your_email@example.com)"  # set a sensible UA
 TILE_SIZE = 256
@@ -43,51 +43,11 @@ MAX_GPU_TEXTURES = 512
 CHECKER_COLOR_A = 200
 CHECKER_COLOR_B = 60
 
+from tile_utils import *
 
-def latlon_to_tile(lat, lon, zoom):
-    n = 2 ** zoom
-    xtile = int((lon + 180.0) / 360.0 * n)
-    lat_rad = math.radians(lat)
-    ytile = int((1.0 - math.log(math.tan(lat_rad) + 1 / math.cos(lat_rad)) / math.pi) / 2.0 * n)
-    return ytile, xtile
-
-# ----------------- Utility -----------------
-def clamp(a,b,c): return max(b, min(c, a))
-
-# ORIG
-def latlon_to_xyz(lat, lon, R=1.0):
-    lon += 180
-    la = math.radians(lat)
-    lo = math.radians(-lon)  # ← flip sign to restore east-positive orientation
-    x = R * math.cos(la) * math.cos(lo)
-    y = R * math.sin(la)
-    z = R * math.cos(la) * math.sin(lo)
-    return x, y, z
-
-def xyz_to_latlon(x, y, z):
-    """Inverse of above: returns (lat, lon) with lon in (-180,180]."""
-    r = math.sqrt(x*x + y*y + z*z)
-    lat = math.degrees(math.asin(y / r))
-    lon = math.degrees(math.atan2(z, x))
-    # normalize lon to (-180,180]
-    if lon > 180: lon -= 360
-    if lon <= -180: lon += 360
-    return lat, lon
-
-def tile2lon(x, z):
-     n = 2 ** z
-     return x / n * 360.0 - 180.0
- 
-def tile2lat(y, z):
-    n = 2 ** z
-    ##y = n - 1 - y
-    lat_rad = math.atan(math.sinh(math.pi * (1 - 2 * y / n)))
-    return math.degrees(lat_rad)
-
-def tile_path(z,x,y):
-    return os.path.join(CACHE_ROOT, str(z), str(x), f"{y}.png")
-
-# ----------------- Disk loader worker -----------------
+#-------------------------------------------------------
+# Tile Fetcher
+#-------------------------------------------------------
 class DiskLoader(threading.Thread):
     def __init__(self, req_q, res_q, stop_event):
         super().__init__(daemon=True)
@@ -106,7 +66,7 @@ class DiskLoader(threading.Thread):
             except queue.Empty:
                 continue
             np_img = None
-            path = tile_path(z,x,y)
+            path = tile_path(CACHE_ROOT,z,x,y)
             if not os.path.exists(path):
                 # download fot later
                 url = TILE_URL.format(z=z, x=x, y=y)
@@ -137,36 +97,45 @@ class DiskLoader(threading.Thread):
             self.res_q.put((z,x,y,np_img))
             self.req_q.task_done()
 
-# ----------------- GL widget -----------------
+#-------------------------------------------------------
+# OpenGL Widget
+#-------------------------------------------------------
 class GlobeOfflineTileAligned(QOpenGLWidget):
     infoSig = pyqtSignal(dict)
     def __init__(self):
         super().__init__()
         self.setMinimumSize(900,600)
+
+        # Current geometry
         self.rot_x = 0.0
         self.rot_y = 90.0
         self.distance = 3.2
         self.last_pos = None
-
         self.zoom_level = 3
         self.center_lla = {'lat' : 0, 'lon': 0, 'alt': 0}
 
+        #-------------------------------------------------
+        # Life cycle of a tile:
+        #-------------------------------------------------
+        #  1. gets added into screen_tiles
+        #  2. add to inflight and req_q
+        #  3. Diskloader puts img data into res_q
+        #  4. Img data put into pending
+        #  5. Pending converted to textures
+        #  6. When textures overflow, they are removed
+        #-------------------------------------------------
+        # Tiles that have been requested but not received
         self.inflight = {}
-        #---------------------------------------------------------
-        # (TODO) Tile loading pipeline
-        #---------------------------------------------------------
-        # 1. gui puts in pending if it's not in there
-        # 2. if tile in cache, return it
-        # 2.1 if there is space in current_tile_nams, start a request
-        # 3. on tile returned, remove from current_tile_nams, start a new
-        #    3.1 SORT based on distance from current_lla
-        # 4. Prune textures based on distance from current_lla
-        self.screen_tiles = {}
-        self.pending_tiles = {}
-        self.current_tile_nams = {}
-        self.textures = OrderedDict()
-        self.base_textures = OrderedDict()
-
+        # Tiles currently on screen (estimated)
+        self.screen_tiles = {} 
+        # Holds img data that is not yet a texture
+        self.pending = {}
+        # Pending serviced by a timer, so needs a lock
+        self.pending_lock = threading.Lock()
+        # Handles to opengl textures
+        self.textures = OrderedDict() 
+        # Handles to opengl texture (kept separate so they won't be deleted)
+        self.base_textures = OrderedDict() 
 
         # background loader queues
         self.req_q = queue.Queue()
@@ -175,19 +144,19 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
         self.loader = DiskLoader(self.req_q, self.res_q, self.stop_event)
         self.loader.start()
 
+        #----------------------------
         # Load base layer
+        #----------------------------
         self.load_base_textures()
 
-        # pending uploads
-        self.pending = {}
-        self.pending_lock = threading.Lock()
+        # Image data waiting to be turned into textures
         self.max_gpu_textures = MAX_GPU_TEXTURES
         self.flip_horizontal_on_upload = False
 
         # poll timer to move results from res_q -> pending
         self.poll_timer = QtCore.QTimer(self)
         self.poll_timer.timeout.connect(self._transfer_results_to_pending)
-        self.poll_timer.start(40)
+        self.poll_timer.start(100)
 
         self.info_timer = QtCore.QTimer(self)
         self.info_timer.timeout.connect(self.publish_display_info)
@@ -255,37 +224,7 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
         for x in xs:
             for y in ys:
                 key = (base_z,x,y)
-                self._ensure_request(key)
-
-    def onTileDownloaded(self, z, x, y):
-        pass
-
-    def tile_in_cache(self):
-        return False
-
-    def load_tile(self, key):
-        pass
-
-    def requestTile(self, z, x, y):
-        key = (z,x,y)
-        #-----------------------------
-        # If tile exists, start load
-        #-----------------------------
-        if self.tile_in_cache(key):
-            TILE = self.load_tile(key)
-            return True
-
-        #-----------------------------
-        # Place in pending
-        #-----------------------------
-        if key not in self.pending_tiles:
-            pending_tiles[key] = 1
-        if len(self.current_tile_names) < NUM_DOWNLOADERS:
-            pass
-
-    def getTexture(self, z, x, y):
-        pass
-
+                self.request_tile(key)
 
     def paintGL(self):
         self.makeCurrent()
@@ -321,9 +260,9 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
             level_z = key[0]
             x = key[1]
             y = key[2]
-            tex = self._get_texture_for_key(key)
+            tex = self.get_tile_texture(key)
             if tex is None:
-                self._ensure_request(key)
+                self.request_tile(key)
                 continue
             lon0, lon1 = tile2lon(x, level_z), tile2lon(x+1, level_z)
             lat0, lat1 = tile2lat(y+1, level_z), tile2lat(y, level_z)
@@ -341,10 +280,9 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
             # small marker sphere
             quad = gluNewQuadric()
             glColor3f(1.0, 0.0, 0.0)
-            gluSphere(quad, 0.01, 8, 6)
+            gluSphere(quad, 0.005, 8, 6)
             gluDeleteQuadric(quad)
             glPopMatrix()
-            # (optionally draw label using your existing text overlay)
 
     # ----------------- pending/result handling -----------------
     def _transfer_results_to_pending(self):
@@ -364,8 +302,6 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
         with self.pending_lock:
             items = list(self.pending.items())
             self.pending.clear()
-        if not items:
-            return
         for key, arr in items:
             if arr is None:
                 continue
@@ -407,22 +343,20 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
                 except: pass
 
     # ----------------- texture & request helpers -----------------
-    def _get_texture_for_key(self, key):
+    def get_tile_texture(self, key):
+        '''Retrieve a texture'''
         if key[0] == 3:
             return self.base_textures.get(key)
         else:
             return self.textures.get(key)
 
-    def _ensure_request(self,key):
-        #print (f"looking for {key}")
+    def request_tile(self,key):
+        '''Put a tile into request queue iff it is not already pending'''
         if key in self.inflight: 
-            #print ("..in flight")
             return
         z,x,y = key
         if z<MIN_Z or z>MAX_Z: 
-            #print (".. bad z")
             return
-        #print ("..adding to q")
         self.inflight[key] = True
         self.req_q.put(key)
 
@@ -506,7 +440,7 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
                            'center_lla' : self.center_lla} )
 
     def updateScene(self):
-        # 3. Put those tiles *first* in the tile queue
+        ''' Figoure out what tiles we need and stuff '''
 
         # 1. Get current center point, zoom
         distance = self.distance
@@ -520,26 +454,14 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
             level_z = 6
         else:
             level_z = 7
-
         self.zoom_level = level_z
 
+        # 2. Calculate scene center
         lat, lon = self.get_center_latlon()
-        #current_tile_y, current_tile_x = latlon_to_tile(lat, lon, level_z)
-        #lat, lon = self.get_center_latlon()
-        #self.set_center_lla(lat, lon)
         self.current_tile_y, self.current_tile_x = latlon_to_tile(lat, lon, level_z)
+        self.set_center_lla(lat, lon, alt=0)
 
-        # 2. Get desired tile list
-        #---------------------------------------------------
-        # estimate a list of tiles that are on screen
-        #  - box wit radius R
-        #  - if near a pole, make X extent bigger
-        #  - handle wrap conditions
-        #
-        # TODO:
-        #  - these should go to a thread requesting tiles
-        #  - remove tiles that are not on screen
-        #------------------------------------------------
+        # 3. Get desired tile list
         # Scale x as we get near the poles
         R = 3
         n = 2**self.zoom_level
@@ -564,20 +486,18 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
         ys[ys < 0] += n # wrap
         ys[ys >= n] -= n # 2rap
         ys = np.unique(ys)
-        # END TEST
+        
+        # 4. Set current tiles on the screen
         self.screen_tiles.clear()
         for x in xs:
             for y in ys:
                 key = (self.zoom_level, x, y)
                 self.screen_tiles[(key)] = True
 
-        #for key, val in self.scrren_tiles.keys():
-        #    pass
-        #print (self.screen_tiles)
-
     # ----------------- interaction -----------------
     def mousePressEvent(self, ev): 
         self.last_pos = ev.pos()
+
     def mouseMoveEvent(self, ev):
         # TODO - scale how much this moves based on zoom level
         if self.last_pos is None: self.last_pos=ev.pos(); return
@@ -589,12 +509,14 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
             self.updateScene()
             self.update()
         self.last_pos=ev.pos()
+
     def wheelEvent(self, ev):
         delta = ev.angleDelta().y()/120.0
         self.distance -= delta*0.35
         self.distance = clamp(self.distance, 1.1, 8.0)
         self.updateScene()
         self.update()
+
     def keyPressEvent(self, ev):
         if ev.key()==QtCore.Qt.Key_Escape: self.close()
         else: super().keyPressEvent(ev)
@@ -616,6 +538,7 @@ class MainWindow(QtWidgets.QWidget):
         self.setLayout(hbox)
         self.globe.infoSig.connect(self.on_window)
         self.globe.updateScene()
+
     def on_window(self, info_dict: dict):
         s = f"Level: {info_dict['level']}\n"
         s += f"Lat: {info_dict['center_lla']['lat']:.2f}\n"
