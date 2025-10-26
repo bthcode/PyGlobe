@@ -28,10 +28,10 @@ from OpenGL.GLU import *
 # ----------------- Config -----------------
 
 DOWNLOAD_TIMEOUT = 10
-#TILE_URL = "https://tile.openstreetmap.org/{z}/{x}/{y}.png"  # common XYZ server (y top origin)
-#CACHE_ROOT= "./osm_cache"
-TILE_URL = "https://api.maptiler.com/maps/hybrid/{z}/{x}/{y}.jpg?key=oqjJNjlgIemNU8MjyXFj"
-CACHE_ROOT = "./sat_cache"
+TILE_URL = "https://tile.openstreetmap.org/{z}/{x}/{y}.png"  # common XYZ server (y top origin)
+CACHE_ROOT= "./osm_cache"
+#TILE_URL = "https://api.maptiler.com/maps/hybrid/{z}/{x}/{y}.jpg?key=oqjJNjlgIemNU8MjyXFj"
+#CACHE_ROOT = "./sat_cache"
 
 USER_AGENT = "pyvista-globe-example/1.0 (your_email@example.com)"  # set a sensible UA
 TILE_SIZE = 256
@@ -138,8 +138,8 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
         self.base_textures = OrderedDict() 
 
         # background loader queues
-        self.req_q = queue.Queue()
-        self.res_q = queue.Queue()
+        self.req_q = queue.LifoQueue() # Use a lifo so that current screen pos is first request
+        self.res_q = queue.LifoQueue()
         self.stop_event = threading.Event()
         self.loader = DiskLoader(self.req_q, self.res_q, self.stop_event)
         self.loader.start()
