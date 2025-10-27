@@ -124,23 +124,24 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
 
         # Image data waiting to be turned into textures
         self.max_gpu_textures = MAX_GPU_TEXTURES
-        self.flip_horizontal_on_upload = False
 
+        # Publish info to display on a timer
         self.info_timer = QtCore.QTimer(self)
         self.info_timer.timeout.connect(self.publish_display_info)
         self.info_timer.start(1000)
 
     def shutdownFetcher(self):
+        '''Shut Down Tile Fetching Thread'''
         self.sigShutdownFetcher.emit()
         time.sleep(1)
         self.fetcher_thread.quit()
         self.fetcher_thread.wait()
 
-    def closeEvent(self, ev):
+    def closeEvent(self, ev)->None:
         event.accept()
         super().closeEvent(ev)
 
-    def initializeGL(self):
+    def initializeGL(self)->None:
         glEnable(GL_DEPTH_TEST)
         glEnable(GL_TEXTURE_2D)
         glFrontFace(GL_CCW)
@@ -150,15 +151,16 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
         glClearColor(0.07,0.08,0.1,1.0)
 
-    def resizeGL(self, w, h):
+    def resizeGL(self, w:int, h:int)->None:
         glViewport(0,0,w,h)
 
-    def set_center_lla(self, lat, lon, alt=0):
+    def set_center_lla(self, lat: float, lon:float, alt:float=0)->None:
         self.center_lla = { 'lat' : lat,
                             'lon' : lon,
                             'alt' : alt }
 
-    def get_center_latlon(self):
+    def get_center_latlon(self) -> [float,float]:
+        '''Calculate where the camera is currently pointing'''
         # Compute camera position in world coords
         rx = math.radians(self.rot_x)
         ry = math.radians(self.rot_y)
@@ -187,7 +189,7 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
         return -lat, -lon
 
     def load_base_textures(self):
-        '''Load lowest level '''
+        '''Ensure lowest level of map is always loaded'''
         # Always draw level3
         base_z = 3
         n = 2**base_z
@@ -257,14 +259,16 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
 
     # ----------------- pending/result handling -----------------
     @pyqtSlot(int,int,int,bytes)
-    def onTileReady(self, z, x, y, data):
+    def onTileReady(self, z: int, x:int, y:int, data:bytes) ->None:
+        '''Event handler from TileFetcher::tileReady : transfer to pending queue'''
         key = (z,x,y)
         del self.inflight[key]
         with self.pending_lock:
             self.pending[key] = data
         self.update()
 
-    def _upload_pending_textures(self):
+    def _upload_pending_textures(self)->None:
+        '''Transfer from pending to OpenGL texture, pruning old textures '''
         with self.pending_lock:
             items = list(self.pending.items())
             self.pending.clear()
@@ -285,9 +289,6 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
             arr = np.ascontiguousarray(np_img, dtype=np.uint8)
             h, w = arr.shape[0], arr.shape[1]
 
-
-            if self.flip_horizontal_on_upload:
-                arr = np.flip(arr, axis=1)
             arr = np.ascontiguousarray(arr, dtype=np.uint8)
             h,w = arr.shape[0], arr.shape[1]
             texid = glGenTextures(1)
@@ -303,12 +304,16 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
             # replace previous texture
             if key in self.textures:
                 old = self.textures.pop(key)
-                try: glDeleteTextures([old])
-                except: pass
+                try: 
+                    glDeleteTextures([old])
+                except: 
+                    pass
             if key in self.base_textures:
                 old = self.base_textures.pop(key)
-                try: glDeleteTextures([old])
-                except: pass
+                try: 
+                    glDeleteTextures([old])
+                except: 
+                    pass
 
             # Protected base layer
             if key[0] == 3:
@@ -319,21 +324,40 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
             # pruning
             while len(self.textures) > self.max_gpu_textures:
                 oldk, oldtex = self.textures.popitem(last=False)
-                #print (f"pruning {oldk}")
-                try: glDeleteTextures([oldtex])
-                except: pass
+                try: 
+                    glDeleteTextures([oldtex])
+                except: 
+                    pass
 
     # ----------------- texture & request helpers -----------------
-    def get_tile_texture(self, key):
-        '''Retrieve a texture'''
+    def get_tile_texture(self, key: tuple(int,int,int)) -> np.uint32:
+        '''Retrieve a texture
+        Params
+        ------
+        key : (z, x, y)
+
+        Returns
+        -------
+        tex_id : np.uint32 : OpenGL texture ID
+        '''
         if key[0] == 3:
             return self.base_textures.get(key)
         else:
             return self.textures.get(key)
 
-    def request_tile(self,key):
-        '''Put a tile into request queue iff it is not already pending'''
+    def request_tile(self,key: tuple(int,int,int))->None:
+        '''If a tile is not already loaded, emit a request
+        Params
+        ------
+        key: (z,x,y)
+        '''
         if key in self.inflight: 
+            return
+        if key in self.textures:
+            return
+        if key in self.base_textures:
+            return
+        if key in self.pending:
             return
         z,x,y = key
         if z<MIN_Z or z>MAX_Z: 
@@ -342,17 +366,21 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
         self.requestTile.emit(z,x,y,TILE_URL)
 
     # ----------------- drawing helpers -----------------
-    def _draw_spherical_tile(self, lat0, lat1, lon0, lon1, texid, alpha=1.0):
+    def _draw_spherical_tile(self, lat0:float, lat1:float, lon0:float, lon1:float, texid:np.uint32, alpha:float=1.0)->None:
+        '''Draw a tile on the curved Earth'''
         glBindTexture(GL_TEXTURE_2D, texid)
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE)
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE)
         glColor4f(1.0,1.0,1.0,alpha)
 
-        
-        n_sub = 6  # you can increase for smoother curvature; can be adaptive by zoom
+        # Create an array that approximates the earth 
+        n_sub = 6  
         latitudes = np.linspace(lat0, lat1, n_sub+1)
         longitudes = np.linspace(lon0, lon1, n_sub+1)
 
+        #------------------------------------------
+        # Draw the outline of the box for debug
+        #------------------------------------------
         self.debug_mode = True
         if self.debug_mode:
             glDisable(GL_TEXTURE_2D)
@@ -389,6 +417,9 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
             glColor3f(1, 1, 1)
 
 
+        #------------------------------------------
+        # Draw the actual tile
+        #------------------------------------------
         for i in range(n_sub):
             for j in range(n_sub):
                 la0 = latitudes[i]; la1 = latitudes[i+1]
@@ -416,13 +447,16 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
         glColor4f(1.0,1.0,1.0,1.0)
         
 
-    def publish_display_info(self):
+    def publish_display_info(self)->None:
+        '''Emit debug info'''
         self.infoSig.emit({'level' : self.zoom_level,
-                           'center_lla' : self.center_lla} )
+                           'center_lla' : self.center_lla,
+                           'current_tile_x' : self.current_tile_x,
+                           'current_tile_y' : self.current_tile_y} )
 
 
-    def updateScene(self):
-        ''' Figoure out what tiles we need and stuff '''
+    def updateScene(self)->None:
+        ''' Figoure out basic geometry of current view'''
 
         # 1. Get current center point, zoom
         distance = self.distance
@@ -446,29 +480,31 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
         self.set_center_lla(lat, lon, alt=0)
         self.setAimpoint.emit(int(level_z), int(self.current_tile_x), int(self.current_tile_y))
 
+        #----------------------------------------------------------
         # 3. Get desired tile list
         # Scale x as we get near the poles
+        #  TODO - this algorithm is a very rough approximation
+        #----------------------------------------------------------
         R = 3
         n = 2**self.zoom_level
         l = abs(lat)
         XR = R
         if l > 55: 
-            XR = n//2
-        elif l > 30: 
-            XR = 4
-        elif l > 20: 
             XR = 7
+        elif l > 30: 
+            XR = 5
+        elif l > 20: 
+            XR = 3
         else:
             pass
 
-
-        XR = min(n//2, XR)
+        #XR = min(n//2, XR)
         xs = np.arange(self.current_tile_x - XR, self.current_tile_x + XR+1, 1)
         xs[xs < 0] += n # wrap
         xs[xs >= n] -= n # wrap
         xs = np.unique(xs)
 
-        ys = np.arange(self.current_tile_y - 3, self.current_tile_y + 3+1, 1)
+        ys = np.arange(self.current_tile_y - 5, self.current_tile_y + 5+1, 1)
         ys[ys < 0] += n # wrap
         ys[ys >= n] -= n # 2rap
         ys = np.unique(ys)
@@ -483,11 +519,12 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
                 self.request_tile((self.zoom_level, x, y))
 
     # ----------------- interaction -----------------
-    def mousePressEvent(self, ev): 
+    def mousePressEvent(self, ev)->None: 
+        '''Beginning of mouse move'''
         self.last_pos = ev.pos()
 
-    def mouseMoveEvent(self, ev):
-        # TODO - scale how much this moves based on zoom level
+    def mouseMoveEvent(self, ev)->None:
+        '''End of mouse move'''
         if self.last_pos is None: self.last_pos=ev.pos(); return
         dx = ev.x()-self.last_pos.x()
         dy = ev.y()-self.last_pos.y()
@@ -499,17 +536,13 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
             self.update()
         self.last_pos=ev.pos()
 
-    def wheelEvent(self, ev):
-        #self.resetFetcher.emit()
+    def wheelEvent(self, ev)->None:
+        '''Zoom'''
         delta = ev.angleDelta().y()/120.0
         self.distance -= delta*0.35
         self.distance = clamp(self.distance, 1.1, 8.0)
         self.updateScene()
         self.update()
-
-    def keyPressEvent(self, ev):
-        if ev.key()==QtCore.Qt.Key_Escape: self.close()
-        else: super().keyPressEvent(ev)
 
 class MainWindow(QtWidgets.QWidget):
     def __init__(self):
@@ -530,6 +563,8 @@ class MainWindow(QtWidgets.QWidget):
         s += f"Lat: {info_dict['center_lla']['lat']:.2f}\n"
         s += f"Lon: {info_dict['center_lla']['lon']:.2f}\n"
         s += f"Alt: {info_dict['center_lla']['alt']:.2f}\n"
+        s += f"X:   {info_dict['current_tile_x']}\n"
+        s += f"Y:   {info_dict['current_tile_y']}\n"
         self.text.setText(s)
 
 

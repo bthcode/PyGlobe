@@ -15,6 +15,16 @@ from PyQt5.QtNetwork import QNetworkAccessManager, QNetworkRequest, QNetworkRepl
 # ---------------------------------------------------------------------------
 
 class TileFetcher(QObject):
+    '''TMS tile retreiver 
+
+    Remarks
+    -------
+    - Listens for current aimpoint (tile index)
+    - Sorts pending tiles by distnce from current aimpoint
+    - Uses an on-disk cache of tiles
+    - Emits tileReady when a tile is loaded
+    '''
+
     tileReady = pyqtSignal(int, int, int, bytes)  # z, x, y, image data
 
     def __init__(self, cache_dir="cache", parent=None):
@@ -36,9 +46,8 @@ class TileFetcher(QObject):
     # ------------------------ slots (thread-safe) ------------------------
 
     @pyqtSlot()
-    def shutdown(self):
+    def shutdown(self)->None:
         """Cleanly stop timers and pending operations."""
-        print("TileFetcher: shutting down")
         self.timer.stop()
         for reply in list(self.active.values()):
             reply.abort()
@@ -47,7 +56,7 @@ class TileFetcher(QObject):
         self.requested.clear()
 
     @pyqtSlot(int, int, int)
-    def setAimpoint(self, zoom, x, y):
+    def setAimpoint(self, zoom:int, x:int, y:int) -> None:
         """Set the current aimpoint (center tile)."""
         self.aimpoint = (zoom, x, y)
         # reprioritize queue
@@ -83,27 +92,28 @@ class TileFetcher(QObject):
 
     # ------------------------ private helpers ------------------------
 
-    def _tile_distance(self, item, aim):
+    def _tile_distance(self, item:tuple[int,int,int,int], aim: tuple[int,int,int])->int:
+        '''Calculate distance from an aimpoint tile to current tile'''
         z, x, y, _ = item
         az, ax, ay = aim
         return abs(ax - x) + abs(ay - y) + (abs(az - z) * 4)
 
-    def _dispatch_next(self):
-        """Process the next pending request if capacity allows."""
+    def _dispatch_next(self)->None:
+        """If any downloaders are available, start a download"""
         if len(self.active) >= 4 or not self.pending:
             return
 
         z, x, y, url_template = self.pending.pop(0)
         url = url_template.format(z=z, x=x, y=y)
-        print (f"get: {url}")
+        #print (f"get: {url}")
         req = QNetworkRequest(QUrl(url))
         req.setRawHeader(b"User-Agent", self.user_agent)
         reply = self.nam.get(req)
         reply.finished.connect(lambda: self._on_finished(reply, z, x, y))
         self.active[(z, x, y)] = reply
 
-    def _on_finished(self, reply: QNetworkReply, z, x, y):
-        """Handle reply completion."""
+    def _on_finished(self, reply: QNetworkReply, z:int, x:int, y:int)->None:
+        """Handle a response from tile server - cache the tile, emit tileReady"""
         reply.deleteLater()
         self.active.pop((z, x, y), None)
 
