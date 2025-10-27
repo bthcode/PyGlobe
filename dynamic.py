@@ -13,6 +13,7 @@ import sys, os, math, threading, queue, pprint
 from collections import OrderedDict
 import requests
 from io import BytesIO
+import time
 
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
@@ -20,7 +21,7 @@ import pathlib
 
 from PyQt5 import QtCore, QtWidgets, QtGui
 from PyQt5.QtNetwork import QNetworkAccessManager
-from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QThread
+from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QThread, pyqtSlot
 from PyQt5.QtWidgets import QApplication, QMainWindow, QOpenGLWidget
 from OpenGL.GL import *
 from OpenGL.GLU import *
@@ -44,64 +45,18 @@ CHECKER_COLOR_A = 200
 CHECKER_COLOR_B = 60
 
 from tile_utils import *
+from tile_fetcher import TileFetcher
 
-#-------------------------------------------------------
-# Tile Fetcher
-#-------------------------------------------------------
-class DiskLoader(threading.Thread):
-    def __init__(self, req_q, res_q, stop_event):
-        super().__init__(daemon=True)
-        self.req_q = req_q
-        self.res_q = res_q
-        self.stop_event = stop_event
-        try:
-            self.font = ImageFont.truetype("DejaVuSans.ttf", 72)
-        except Exception:
-            self.font = None
-
-    def run(self):
-        while not self.stop_event.is_set():
-            try:
-                z,x,y = self.req_q.get(timeout=0.1)
-            except queue.Empty:
-                continue
-            np_img = None
-            path = tile_path(CACHE_ROOT,z,x,y)
-            if not os.path.exists(path):
-                # download fot later
-                url = TILE_URL.format(z=z, x=x, y=y)
-                print (f"fetching: {url}")
-                try:
-                    s = requests.Session()
-                    s.headers.update({"User-Agent": USER_AGENT})
-                    resp = s.get(url, timeout=DOWNLOAD_TIMEOUT)
-                    img = Image.open(BytesIO(resp.content)).convert("RGBA")
-                    p = pathlib.Path(path)
-                    p.parent.mkdir(parents=True, exist_ok=True)
-                    img.save(p)
-                except Exception as err:
-                    continue
-
-            try:
-                pil = Image.open(path).convert("RGB")
-                np_img = np.asarray(pil, dtype=np.uint8)
-            except Exception as e:
-                np_img = None
-                print("disk loader: failed to open", path, e)
-                continue
-
-
-            # keep exactly 3 channels
-            if np_img.ndim == 3 and np_img.shape[2] > 3:
-                np_img = np_img[:,:,:3]
-            self.res_q.put((z,x,y,np_img))
-            self.req_q.task_done()
 
 #-------------------------------------------------------
 # OpenGL Widget
 #-------------------------------------------------------
 class GlobeOfflineTileAligned(QOpenGLWidget):
     infoSig = pyqtSignal(dict)
+    requestTile = pyqtSignal(int, int, int, str)
+    setAimpoint = pyqtSignal(int, int, int)
+    resetFetcher = pyqtSignal()
+    sigShutdownFetcher = pyqtSignal()
     def __init__(self):
         super().__init__()
         self.setMinimumSize(900,600)
@@ -137,12 +92,30 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
         # Handles to opengl texture (kept separate so they won't be deleted)
         self.base_textures = OrderedDict() 
 
+
+        #-------------------------------------------------
+        # Fetcher Design
+        #-------------------------------------------------
+        # - Fetcher in a thread
+        # - Gui Moves, 
+        #    - sets setAimpoint -> cached in fetcher
+        #    - emits tile requests 
+        # - Fetcher sorts tile requests by distance from aimpoint
+        # - when it loads a tile, it emits tileReady
+        #------------------------------------------------
+
         # background loader queues
-        self.req_q = queue.LifoQueue() # Use a lifo so that current screen pos is first request
-        self.res_q = queue.LifoQueue()
-        self.stop_event = threading.Event()
-        self.loader = DiskLoader(self.req_q, self.res_q, self.stop_event)
-        self.loader.start()
+        self.fetcher = TileFetcher(cache_dir=CACHE_ROOT)
+        self.fetcher_thread = QThread()
+        self.fetcher.moveToThread(self.fetcher_thread)
+        self.fetcher_thread.start()
+
+        # Fetcher Control
+        self.requestTile.connect(self.fetcher.requestTile)
+        self.setAimpoint.connect(self.fetcher.setAimpoint)
+        self.resetFetcher.connect(self.fetcher.reset)
+        self.sigShutdownFetcher.connect(self.fetcher.shutdown)
+        self.fetcher.tileReady.connect(self.onTileReady)
 
         #----------------------------
         # Load base layer
@@ -153,19 +126,20 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
         self.max_gpu_textures = MAX_GPU_TEXTURES
         self.flip_horizontal_on_upload = False
 
-        # poll timer to move results from res_q -> pending
-        self.poll_timer = QtCore.QTimer(self)
-        self.poll_timer.timeout.connect(self._transfer_results_to_pending)
-        self.poll_timer.start(100)
-
         self.info_timer = QtCore.QTimer(self)
         self.info_timer.timeout.connect(self.publish_display_info)
         self.info_timer.start(1000)
 
+    def shutdownFetcher(self):
+        print ("XXX")
+        self.sigShutdownFetcher.emit()
+        time.sleep(1)
+        self.fetcher_thread.quit()
+        self.fetcher_thread.wait()
+        print ("YYY")
 
     def closeEvent(self, ev):
-        self.stop_event.set()
-        self.loader.join(timeout=1.0)
+        event.accept()
         super().closeEvent(ev)
 
     def initializeGL(self):
@@ -241,7 +215,6 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
         glRotatef(self.rot_x,1,0,0)
         glRotatef(self.rot_y,0,1,0)
 
-
         #---------------------------------------------
         # Base Layer
         #---------------------------------------------
@@ -285,17 +258,12 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
             glPopMatrix()
 
     # ----------------- pending/result handling -----------------
-    def _transfer_results_to_pending(self):
-        while True:
-            try:
-                z,x,y,arr = self.res_q.get_nowait()
-            except queue.Empty:
-                break
-            key = (z,x,y)
-            del self.inflight[key]
-            with self.pending_lock:
-                self.pending[key] = arr
-            self.res_q.task_done()
+    @pyqtSlot(int,int,int,bytes)
+    def onTileReady(self, z, x, y, data):
+        key = (z,x,y)
+        del self.inflight[key]
+        with self.pending_lock:
+            self.pending[key] = data
         self.update()
 
     def _upload_pending_textures(self):
@@ -305,6 +273,21 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
         for key, arr in items:
             if arr is None:
                 continue
+
+            try:
+                pil = Image.open(BytesIO(arr)).convert("RGB")
+                np_img = np.asarray(pil, dtype=np.uint8)
+            except Exception as e:
+                print("failed to open tile", z, x, y, e)
+                return
+
+            # make sure it's contiguous 3-channel
+            if np_img.ndim == 3 and np_img.shape[2] > 3:
+                np_img = np_img[:, :, :3]
+            arr = np.ascontiguousarray(np_img, dtype=np.uint8)
+            h, w = arr.shape[0], arr.shape[1]
+
+
             if self.flip_horizontal_on_upload:
                 arr = np.flip(arr, axis=1)
             arr = np.ascontiguousarray(arr, dtype=np.uint8)
@@ -358,7 +341,7 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
         if z<MIN_Z or z>MAX_Z: 
             return
         self.inflight[key] = True
-        self.req_q.put(key)
+        self.requestTile.emit(z,x,y,TILE_URL)
 
     # ----------------- drawing helpers -----------------
     def _draw_spherical_tile(self, lat0, lat1, lon0, lon1, texid, alpha=1.0):
@@ -491,8 +474,11 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
         self.screen_tiles.clear()
         for x in xs:
             for y in ys:
+                x = int(x); y=int(y)
                 key = (self.zoom_level, x, y)
                 self.screen_tiles[(key)] = True
+                self.request_tile((self.zoom_level, x, y))
+                #self.requestTile.emit( self.zoom_level, x, y, TILE_URL )
 
     # ----------------- interaction -----------------
     def mousePressEvent(self, ev): 
@@ -520,10 +506,6 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
     def keyPressEvent(self, ev):
         if ev.key()==QtCore.Qt.Key_Escape: self.close()
         else: super().keyPressEvent(ev)
-
-    def __del__(self):
-        try: self.stop_event.set()
-        except: pass
 
 class MainWindow(QtWidgets.QWidget):
     def __init__(self):
@@ -555,6 +537,7 @@ if __name__=="__main__":
     win = MainWindow() #GlobeOfflineTileAligned()
     win.setWindowTitle("Example Globe")
     win.resize(1200,800)
+    app.aboutToQuit.connect(win.globe.shutdownFetcher)
     win.show()
     sys.exit(app.exec_())
 
