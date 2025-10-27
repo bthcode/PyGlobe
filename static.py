@@ -35,7 +35,7 @@ TILE_URL = "https://tile.openstreetmap.org/{z}/{x}/{y}.png"  # common XYZ server
 USER_AGENT = "pyvista-globe-example/1.0 (your_email@example.com)"  # set a sensible UA
 # If using a true TMS server where y origin is bottom, set TMS_IS_TOP_ORIGIN=False and TILE_URL accordingly.
 
-CACHE_DIR = "cache"
+CACHE_DIR = "osm_cache"
 os.makedirs(CACHE_DIR, exist_ok=True)
 
 
