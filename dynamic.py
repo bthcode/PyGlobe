@@ -44,8 +44,77 @@ MAX_GPU_TEXTURES = 512
 CHECKER_COLOR_A = 200
 CHECKER_COLOR_B = 60
 
+WGS84_A = 6378137.0        # semi-major axis (m)
+WGS84_F = 1 / 298.257223563
+WGS84_B = WGS84_A * (1 - WGS84_F)
+WGS84_E2 = 1 - (WGS84_B**2 / WGS84_A**2)
+
+
 from tile_utils import *
 from tile_fetcher import TileFetcher
+
+import numpy as np
+
+def geodetic_to_ecef(lat_deg, lon_deg, alt_m):
+    """
+    Convert WGS84 geodetic coordinates to ECEF (meters).
+    """
+    lon_deg += 180
+    lat = np.radians(lat_deg)
+    lon = np.radians(-lon_deg)
+    a = WGS84_A
+    e2 = WGS84_E2
+    N = a / np.sqrt(1 - e2 * np.sin(lat)**2)
+
+    x = (N + alt_m) * np.cos(lat) * np.cos(lon)
+    y = (N + alt_m) * np.cos(lat) * np.sin(lon)
+    z = (N * (1 - e2) + alt_m) * np.sin(lat)
+    return x, y, z
+
+
+import math
+import numpy as np
+
+WGS84_A = 6378137.0
+WGS84_F = 1 / 298.257223563
+WGS84_B = WGS84_A * (1 - WGS84_F)
+WGS84_E2 = 1 - (WGS84_B**2 / WGS84_A**2)
+
+def geodetic_to_app_xyz(lat_deg, lon_deg, alt_m, R=1.0):
+    """
+    Convert WGS84 (lat, lon, alt) to the application's rotated XYZ frame.
+    The rotation matches latlon_to_xyz() in tile_utils.
+    """
+    # Convert geodetic → ECEF meters
+    lat = math.radians(lat_deg)
+    lon = math.radians(lon_deg)
+    a = WGS84_A
+    e2 = WGS84_E2
+    N = a / math.sqrt(1 - e2 * math.sin(lat)**2)
+
+    xe = (N + alt_m) * math.cos(lat) * math.cos(lon)
+    ye = (N + alt_m) * math.cos(lat) * math.sin(lon)
+    ze = (N * (1 - e2) + alt_m) * math.sin(lat)
+
+    # Scale Earth radius to match your scene (R corresponds to a=6378137)
+    scale = R / WGS84_A
+
+    # Convert ECEF → app’s coordinate frame:
+    # Equivalent to lon' = -(lon + 180)
+    lon_app = math.radians(-(lon_deg + 180))
+    lat_app = math.radians(lat_deg)
+    x = R * math.cos(lat_app) * math.cos(lon_app)
+    y = R * math.sin(lat_app)
+    z = R * math.cos(lat_app) * math.sin(lon_app)
+
+    # Apply altitude offset (in meters → scaled units)
+    x *= (1 + alt_m / WGS84_A)
+    y *= (1 + alt_m / WGS84_A)
+    z *= (1 + alt_m / WGS84_A)
+
+    return x, y, z
+
+
 
 
 #-------------------------------------------------------
@@ -62,6 +131,7 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
         self.setMinimumSize(900,600)
 
         # Current geometry
+        self.earth_radius = 1.0
         self.rot_x = 0.0
         self.rot_y = 90.0
         self.distance = 3.2
@@ -245,17 +315,10 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
 
     def debug_place_markers(self):
         ''' Draw a test dot in boston '''
-        tests = [ (42.5, -70.8, "Boston") ]
-        for lat, lon, label in tests:
-            x,y,z = latlon_to_xyz(lat, lon)   # use the corrected function
-            glPushMatrix()
-            glTranslatef(x,y,z)
-            # small marker sphere
-            quad = gluNewQuadric()
-            glColor3f(1.0, 0.0, 0.0)
-            gluSphere(quad, 0.005, 8, 6)
-            gluDeleteQuadric(quad)
-            glPopMatrix()
+        self.earth_radius = 1.0
+        self.earth_radius_m =  WGS84_A
+        self.draw_sphere(42.5,-70.8,alt = 15_000, radius_m = 10_000)
+
 
     # ----------------- pending/result handling -----------------
     @pyqtSlot(int,int,int,bytes)
@@ -365,6 +428,25 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
         self.inflight[key] = True
         self.requestTile.emit(z,x,y,TILE_URL)
 
+
+    def draw_sphere(self, lat, lon, alt=0.0, radius_m=100000.0, color=(1.0, 0.0, 0.0)):
+        """
+        Draw a sphere using WGS84 coordinates, aligned to the globe’s tile frame.
+        """
+        x, y, z = geodetic_to_app_xyz(lat, lon, alt, R=self.earth_radius)
+
+        # Scale radius from meters to world units
+        scale = self.earth_radius / WGS84_A
+
+        glPushMatrix()
+        glTranslatef(x, y, z)
+        glColor3f(*color)
+        quadric = gluNewQuadric()
+        gluSphere(quadric, radius_m * scale, 24, 24)
+        gluDeleteQuadric(quadric)
+        glPopMatrix()
+
+    
     # ----------------- drawing helpers -----------------
     def _draw_spherical_tile(self, lat0:float, lat1:float, lon0:float, lon1:float, texid:np.uint32, alpha:float=1.0)->None:
         '''Draw a tile on the curved Earth'''
