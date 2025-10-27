@@ -131,12 +131,10 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
         self.info_timer.start(1000)
 
     def shutdownFetcher(self):
-        print ("XXX")
         self.sigShutdownFetcher.emit()
         time.sleep(1)
         self.fetcher_thread.quit()
         self.fetcher_thread.wait()
-        print ("YYY")
 
     def closeEvent(self, ev):
         event.accept()
@@ -422,6 +420,7 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
         self.infoSig.emit({'level' : self.zoom_level,
                            'center_lla' : self.center_lla} )
 
+
     def updateScene(self):
         ''' Figoure out what tiles we need and stuff '''
 
@@ -435,14 +434,17 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
             level_z = 5
         elif distance > 1.2:
             level_z = 6
-        else:
+        elif distance > 1.1:
             level_z = 7
+        else:
+            level_z = 8
         self.zoom_level = level_z
 
         # 2. Calculate scene center
         lat, lon = self.get_center_latlon()
         self.current_tile_y, self.current_tile_x = latlon_to_tile(lat, lon, level_z)
         self.set_center_lla(lat, lon, alt=0)
+        self.setAimpoint.emit(int(level_z), int(self.current_tile_x), int(self.current_tile_y))
 
         # 3. Get desired tile list
         # Scale x as we get near the poles
@@ -458,6 +460,7 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
             XR = 7
         else:
             pass
+
 
         XR = min(n//2, XR)
         xs = np.arange(self.current_tile_x - XR, self.current_tile_x + XR+1, 1)
@@ -478,7 +481,6 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
                 key = (self.zoom_level, x, y)
                 self.screen_tiles[(key)] = True
                 self.request_tile((self.zoom_level, x, y))
-                #self.requestTile.emit( self.zoom_level, x, y, TILE_URL )
 
     # ----------------- interaction -----------------
     def mousePressEvent(self, ev): 
@@ -489,6 +491,7 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
         if self.last_pos is None: self.last_pos=ev.pos(); return
         dx = ev.x()-self.last_pos.x()
         dy = ev.y()-self.last_pos.y()
+        #self.resetFetcher.emit()
         if ev.buttons() & QtCore.Qt.LeftButton:
             self.rot_y += dx*3/self.zoom_level
             self.rot_x += dy*3/self.zoom_level
@@ -497,6 +500,7 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
         self.last_pos=ev.pos()
 
     def wheelEvent(self, ev):
+        #self.resetFetcher.emit()
         delta = ev.angleDelta().y()/120.0
         self.distance -= delta*0.35
         self.distance = clamp(self.distance, 1.1, 8.0)
