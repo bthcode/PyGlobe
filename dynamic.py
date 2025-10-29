@@ -55,8 +55,6 @@ WGS84_B = WGS84_A * (1 - WGS84_F)
 WGS84_E2 = 1 - (WGS84_B**2 / WGS84_A**2)
 
 
-
-
 #-------------------------------------------------------
 # TILE UTILITIES
 #-------------------------------------------------------
@@ -71,36 +69,15 @@ def latlon_to_tile(lat:float, lon:float, zoom:float)->[int,int]:
     ytile = int((1.0 - math.log(math.tan(lat_rad) + 1 / math.cos(lat_rad)) / math.pi) / 2.0 * n)
     return ytile, xtile
 
-def latlon_to_xyz(lat:float, lon:float, R:float=1.0)->[float,float,float]:
-    #lon += 180
-    la = math.radians(lat)
-    lo = math.radians(lon)  # ← flip sign to restore east-positive orientation
-    x = R * math.cos(la) * math.cos(lo)
-    y = R * math.sin(la)
-    z = R * math.cos(la) * math.sin(lo)
-    return x, y, z
-
-def latlon_to_app_xyz(lat: float, lon:float, R:float=1.0):
-    '''flip longitude to match up with opengl conventions'''
-    lon += 180
-    la = math.radians(lat)
-    lo = math.radians(-lon)  # ← flip sign to restore east-positive orientation
-    x = R * math.cos(la) * math.cos(lo)
-    y = R * math.sin(la)
-    z = R * math.cos(la) * math.sin(lo)
-    return x, y, z
-
-
-
-##def xyz_to_latlon(x, y, z):
-##    """Inverse of above: returns (lat, lon) with lon in (-180,180]."""
-##    r = math.sqrt(x*x + y*y + z*z)
-##    lat = math.degrees(math.asin(y / r))
-##    lon = math.degrees(math.atan2(z, x))
-##    # normalize lon to (-180,180]
-##    if lon > 180: lon -= 360
-##    if lon <= -180: lon += 360
-##    return lat, lon
+##def latlon_to_app_xyzZ(lat: float, lon:float, R:float=1.0):
+##    '''Convert to lat, lon to XYZ space - note that longitude is flipped to match OpenGL'''
+##    lon += 180
+##    la = math.radians(lat)
+##    lo = math.radians(-lon)  # ← flip sign to restore east-positive orientation
+##    x = R * math.cos(la) * math.cos(lo)
+##    y = R * math.sin(la)
+##    z = R * math.cos(la) * math.sin(lo)
+##    return x, y, z
 
 def tile2lon(x:int, z:int)->float:
      n = 2 ** z
@@ -115,34 +92,11 @@ def tile_path(cache_root:str, z:int,x:int,y:int)->str:
     '''Tile index to path where it should be in cache'''
     return os.path.join(cache_root, str(z), str(x), f"{y}.png")
 
-
-##def geodetic_to_ecef(lat_deg, lon_deg, alt_m):
-##    """
-##    Convert WGS84 geodetic coordinates to ECEF (meters).
-##    """
-##    lon_deg += 180
-##    lat = np.radians(lat_deg)
-##    lon = np.radians(-lon_deg)
-##    a = WGS84_A
-##    e2 = WGS84_E2
-##    N = a / np.sqrt(1 - e2 * np.sin(lat)**2)
-##
-##    x = (N + alt_m) * np.cos(lat) * np.cos(lon)
-##    y = (N + alt_m) * np.cos(lat) * np.sin(lon)
-##    z = (N * (1 - e2) + alt_m) * np.sin(lat)
-##    return x, y, z
-
-
-
-WGS84_A = 6378137.0
-WGS84_F = 1 / 298.257223563
-WGS84_B = WGS84_A * (1 - WGS84_F)
-WGS84_E2 = 1 - (WGS84_B**2 / WGS84_A**2)
-
-def geodetic_to_app_xyz(lat_deg, lon_deg, alt_m, R=1.0):
+def latlon_to_app_xyz(lat_deg, lon_deg, alt_m=0.0, R=1.0):
     """
-    Convert WGS84 (lat, lon, alt) to the application's rotated XYZ frame.
-    The rotation matches latlon_to_xyz() in tile_utils.
+    Convert WGS84 (lat, lon, alt) to application caresian
+
+    NOTE - longitude is flipped and rotate by 180 degrees
     """
     # Convert geodetic → ECEF meters
     lat = math.radians(lat_deg)
@@ -167,9 +121,9 @@ def geodetic_to_app_xyz(lat_deg, lon_deg, alt_m, R=1.0):
     z = R * math.cos(lat_app) * math.sin(lon_app)
 
     # Apply altitude offset (in meters → scaled units)
-    x *= (1 + alt_m / WGS84_A)
-    y *= (1 + alt_m / WGS84_A)
-    z *= (1 + alt_m / WGS84_A)
+    x *= ( 1+ alt_m / WGS84_A)
+    y *= ( 1+ alt_m / WGS84_A)
+    z *= ( 1+ alt_m / WGS84_A)
 
     return x, y, z
 
@@ -494,7 +448,7 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
         """
         Draw a sphere using WGS84 coordinates, aligned to the globe’s tile frame.
         """
-        x, y, z = geodetic_to_app_xyz(lat, lon, alt, R=self.earth_radius)
+        x, y, z = latlon_to_app_xyz(lat, lon, alt, R=self.earth_radius)
 
         #print (x,y,z)
 
@@ -537,26 +491,26 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
                 lon_a = lon0
                 lon_b = lon1
                 # bottom edge
-                glVertex3f(*latlon_to_xyz(lat_a, lon_a))
+                glVertex3f(*latlon_to_app_xyz(lat_a, lon_a))
             for j in range(n_sub + 1):
                 s = j / n_sub
                 lon_a = lon0 + (lon1 - lon0) * s
                 lat_a = lat1
                 # right edge
-                glVertex3f(*latlon_to_xyz(lat_a, lon_a))
+                glVertex3f(*latlon_to_app_xyz(lat_a, lon_a))
             for i in range(n_sub, -1, -1):
                 t = i / n_sub
                 lat_a = lat0 + (lat1 - lat0) * t
                 lon_a = lon1
                 lon_b = lon0
                 # top edge
-                glVertex3f(*latlon_to_xyz(lat_a, lon_a))
+                glVertex3f(*latlon_to_app_xyz(lat_a, lon_a))
             for j in range(n_sub, -1, -1):
                 s = j / n_sub
                 lon_a = lon0 + (lon1 - lon0) * s
                 lat_a = lat0
                 # left edge
-                glVertex3f(*latlon_to_xyz(lat_a, lon_a))
+                glVertex3f(*latlon_to_app_xyz(lat_a, lon_a))
             glEnd()
             glEnable(GL_TEXTURE_2D)
             glColor3f(1, 1, 1)
