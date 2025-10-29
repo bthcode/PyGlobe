@@ -75,6 +75,7 @@ class TileFetcher(QObject):
     def requestTile(self, z, x, y, url_template):
         """Queue or start a tile request."""
         cache_path = os.path.join(self.cache_dir, str(z), str(x), f"{y}.png")
+        #print (f"requested {cache_path}")
 
         # already on disk?
         if os.path.exists(cache_path):
@@ -155,7 +156,7 @@ class TileViewer(QWidget):
         """Simulate moving to a different tile center."""
         self.tile_x += 1
         self.tile_y += 1
-        print(f"New aimpoint: {self.zoom}, {self.tile_x}, {self.tile_y}")
+        #print(f"New aimpoint: {self.zoom}, {self.tile_x}, {self.tile_y}")
         self.setAimpoint.emit(self.zoom, self.tile_x, self.tile_y)
         self.resetFetcher.emit()
         # Request the 3×3 surrounding tiles
