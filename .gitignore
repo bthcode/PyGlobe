@@ -5,6 +5,7 @@ __pycache__/
 
 # Tile cache
 cache/
+*_cache/
 
 # C extensions
 *.so
