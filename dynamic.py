@@ -26,6 +26,11 @@ from PyQt5.QtWidgets import QApplication, QMainWindow, QOpenGLWidget
 from OpenGL.GL import *
 from OpenGL.GLU import *
 
+import math
+import numpy as np
+
+
+from tile_fetcher import TileFetcher
 # ----------------- Config -----------------
 
 DOWNLOAD_TIMEOUT = 10
@@ -50,30 +55,84 @@ WGS84_B = WGS84_A * (1 - WGS84_F)
 WGS84_E2 = 1 - (WGS84_B**2 / WGS84_A**2)
 
 
-from tile_utils import *
-from tile_fetcher import TileFetcher
 
-import numpy as np
 
-def geodetic_to_ecef(lat_deg, lon_deg, alt_m):
-    """
-    Convert WGS84 geodetic coordinates to ECEF (meters).
-    """
-    lon_deg += 180
-    lat = np.radians(lat_deg)
-    lon = np.radians(-lon_deg)
-    a = WGS84_A
-    e2 = WGS84_E2
-    N = a / np.sqrt(1 - e2 * np.sin(lat)**2)
+#-------------------------------------------------------
+# TILE UTILITIES
+#-------------------------------------------------------
+def clamp(a,b,c): 
+    return max(b, min(c, a))
 
-    x = (N + alt_m) * np.cos(lat) * np.cos(lon)
-    y = (N + alt_m) * np.cos(lat) * np.sin(lon)
-    z = (N * (1 - e2) + alt_m) * np.sin(lat)
+def latlon_to_tile(lat:float, lon:float, zoom:float)->[int,int]:
+    '''Returns y,x of tile for a lat lon and zoom level'''
+    n = 2 ** zoom
+    xtile = int((lon + 180.0) / 360.0 * n)
+    lat_rad = math.radians(lat)
+    ytile = int((1.0 - math.log(math.tan(lat_rad) + 1 / math.cos(lat_rad)) / math.pi) / 2.0 * n)
+    return ytile, xtile
+
+def latlon_to_xyz(lat:float, lon:float, R:float=1.0)->[float,float,float]:
+    #lon += 180
+    la = math.radians(lat)
+    lo = math.radians(lon)  # ← flip sign to restore east-positive orientation
+    x = R * math.cos(la) * math.cos(lo)
+    y = R * math.sin(la)
+    z = R * math.cos(la) * math.sin(lo)
+    return x, y, z
+
+def latlon_to_app_xyz(lat: float, lon:float, R:float=1.0):
+    '''flip longitude to match up with opengl conventions'''
+    lon += 180
+    la = math.radians(lat)
+    lo = math.radians(-lon)  # ← flip sign to restore east-positive orientation
+    x = R * math.cos(la) * math.cos(lo)
+    y = R * math.sin(la)
+    z = R * math.cos(la) * math.sin(lo)
     return x, y, z
 
 
-import math
-import numpy as np
+
+##def xyz_to_latlon(x, y, z):
+##    """Inverse of above: returns (lat, lon) with lon in (-180,180]."""
+##    r = math.sqrt(x*x + y*y + z*z)
+##    lat = math.degrees(math.asin(y / r))
+##    lon = math.degrees(math.atan2(z, x))
+##    # normalize lon to (-180,180]
+##    if lon > 180: lon -= 360
+##    if lon <= -180: lon += 360
+##    return lat, lon
+
+def tile2lon(x:int, z:int)->float:
+     n = 2 ** z
+     return x / n * 360.0 - 180.0
+ 
+def tile2lat(y:int, z:int)->float:
+    n = 2 ** z
+    lat_rad = math.atan(math.sinh(math.pi * (1 - 2 * y / n)))
+    return math.degrees(lat_rad)
+
+def tile_path(cache_root:str, z:int,x:int,y:int)->str:
+    '''Tile index to path where it should be in cache'''
+    return os.path.join(cache_root, str(z), str(x), f"{y}.png")
+
+
+##def geodetic_to_ecef(lat_deg, lon_deg, alt_m):
+##    """
+##    Convert WGS84 geodetic coordinates to ECEF (meters).
+##    """
+##    lon_deg += 180
+##    lat = np.radians(lat_deg)
+##    lon = np.radians(-lon_deg)
+##    a = WGS84_A
+##    e2 = WGS84_E2
+##    N = a / np.sqrt(1 - e2 * np.sin(lat)**2)
+##
+##    x = (N + alt_m) * np.cos(lat) * np.cos(lon)
+##    y = (N + alt_m) * np.cos(lat) * np.sin(lon)
+##    z = (N * (1 - e2) + alt_m) * np.sin(lat)
+##    return x, y, z
+
+
 
 WGS84_A = 6378137.0
 WGS84_F = 1 / 298.257223563
@@ -113,9 +172,6 @@ def geodetic_to_app_xyz(lat_deg, lon_deg, alt_m, R=1.0):
     z *= (1 + alt_m / WGS84_A)
 
     return x, y, z
-
-
-
 
 #-------------------------------------------------------
 # OpenGL Widget
@@ -214,9 +270,9 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
     def initializeGL(self)->None:
         glEnable(GL_DEPTH_TEST)
         glEnable(GL_TEXTURE_2D)
-        glFrontFace(GL_CCW)
-        glEnable(GL_CULL_FACE)
-        glCullFace(GL_BACK)
+        glFrontFace(GL_CW)
+        #glEnable(GL_CULL_FACE)
+        #glCullFace(GL_BACK)
         glEnable(GL_BLEND)
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
         glClearColor(0.07,0.08,0.1,1.0)
@@ -281,7 +337,9 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
 
         glMatrixMode(GL_MODELVIEW)
         glLoadIdentity()
-        gluLookAt(0,0,self.distance, 0,0,0, 0,1,0)
+        gluLookAt(0,0,self.distance, 
+                  0,0,0, 
+                  0,1,0)
         glRotatef(self.rot_x,1,0,0)
         glRotatef(self.rot_y,0,1,0)
 
@@ -289,6 +347,9 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
         # Base Layer
         #---------------------------------------------
         for key, tex in self.base_textures.items():
+            #if key[1] != 4 or key[2] != 4:
+            #    continue
+            #print (f"plotting {key}")
             z = key[0]
             x = key[1]
             y = key[2]
@@ -317,7 +378,7 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
         ''' Draw a test dot in boston '''
         self.earth_radius = 1.0
         self.earth_radius_m =  WGS84_A
-        self.draw_sphere(42.5,-70.8,alt = 15_000, radius_m = 10_000)
+        self.draw_sphere(42.5,-70.8,alt = 115_000, radius_m = 10_000)
 
 
     # ----------------- pending/result handling -----------------
@@ -435,6 +496,8 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
         """
         x, y, z = geodetic_to_app_xyz(lat, lon, alt, R=self.earth_radius)
 
+        #print (x,y,z)
+
         # Scale radius from meters to world units
         scale = self.earth_radius / WGS84_A
 
@@ -466,7 +529,7 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
         self.debug_mode = True
         if self.debug_mode:
             glDisable(GL_TEXTURE_2D)
-            glColor3f(1.0, 0.0, 0.0)  # red borders
+            glColor3f(0.0, 0.0, 0.0)  # red borders
             glBegin(GL_LINE_LOOP)
             for i in range(n_sub + 1):
                 t = i / n_sub
@@ -513,10 +576,10 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
                 t11 = ((j+1) / n_sub, 1 - (i+1) / n_sub)
                 t10 = (j / n_sub, 1 - (i+1) / n_sub)
 
-                v00 = latlon_to_xyz(la0, lo0)
-                v01 = latlon_to_xyz(la0, lo1)
-                v11 = latlon_to_xyz(la1, lo1)
-                v10 = latlon_to_xyz(la1, lo0)
+                v00 = latlon_to_app_xyz(la0, lo0)
+                v01 = latlon_to_app_xyz(la0, lo1)
+                v11 = latlon_to_app_xyz(la1, lo1)
+                v10 = latlon_to_app_xyz(la1, lo0)
 
                 glBegin(GL_QUADS)
                 glTexCoord2f(*t00); glVertex3f(*v00)
@@ -558,7 +621,10 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
 
         # 2. Calculate scene center
         lat, lon = self.get_center_latlon()
-        self.current_tile_y, self.current_tile_x = latlon_to_tile(lat, lon, level_z)
+        try:
+            self.current_tile_y, self.current_tile_x = latlon_to_tile(lat, lon, level_z)
+        except:
+            pass
         self.set_center_lla(lat, lon, alt=0)
         self.setAimpoint.emit(int(level_z), int(self.current_tile_x), int(self.current_tile_y))
 
@@ -621,7 +687,7 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
     def wheelEvent(self, ev)->None:
         '''Zoom'''
         delta = ev.angleDelta().y()/120.0
-        self.distance -= delta*0.35
+        self.distance -= delta*0.10
         self.distance = clamp(self.distance, 1.1, 8.0)
         self.updateScene()
         self.update()
