@@ -36,10 +36,8 @@ from tile_fetcher import TileFetcher
 DOWNLOAD_TIMEOUT = 10
 TILE_URL = "https://tile.openstreetmap.org/{z}/{x}/{y}.png"  # common XYZ server (y top origin)
 CACHE_ROOT= "./osm_cache"
-#TILE_URL = "https://api.maptiler.com/maps/hybrid/{z}/{x}/{y}.jpg?key=oqjJNjlgIemNU8MjyXFj"
-#CACHE_ROOT = "./sat_cache"
 
-USER_AGENT = "pyvista-globe-example/1.0 (your_email@example.com)"  # set a sensible UA
+USER_AGENT = "PyGlobe Example/1.0 (your_email@example.com)"  # set a sensible UA
 TILE_SIZE = 256
 MIN_Z = 2
 MAX_Z = 9    # set to highest zoom level you have in cache
