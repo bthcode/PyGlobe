@@ -25,13 +25,14 @@ from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QThread, pyqtSlot
 from PyQt5.QtWidgets import QApplication, QMainWindow, QOpenGLWidget
 from OpenGL.GL import *
 from OpenGL.GLU import *
-from obj_loader import OBJLoader, SceneObject, Scene
+from obj_loader import OBJLoader, SceneObject, Scene, PointSceneObject, PolyLineSceneObject, SceneModel
 
 import math
 import numpy as np
 
 
 from tile_fetcher import TileFetcher
+from coord_utils import *
 # ----------------- Config -----------------
 
 DOWNLOAD_TIMEOUT = 10
@@ -48,73 +49,7 @@ MAX_GPU_TEXTURES = 512
 CHECKER_COLOR_A = 200
 CHECKER_COLOR_B = 60
 
-WGS84_A = 6378137.0        # semi-major axis (m)
-WGS84_F = 1 / 298.257223563
-WGS84_B = WGS84_A * (1 - WGS84_F)
-WGS84_E2 = 1 - (WGS84_B**2 / WGS84_A**2)
 
-
-#-------------------------------------------------------
-# TILE UTILITIES
-#-------------------------------------------------------
-def clamp(a,b,c): 
-    return max(b, min(c, a))
-
-def latlon_to_tile(lat:float, lon:float, zoom:float)->[int,int]:
-    '''Returns y,x of tile for a lat lon and zoom level'''
-    n = 2 ** zoom
-    xtile = int((lon + 180.0) / 360.0 * n)
-    lat_rad = math.radians(lat)
-    ytile = int((1.0 - math.log(math.tan(lat_rad) + 1 / math.cos(lat_rad)) / math.pi) / 2.0 * n)
-    return ytile, xtile
-
-def tile2lon(x:int, z:int)->float:
-     n = 2 ** z
-     return x / n * 360.0 - 180.0
- 
-def tile2lat(y:int, z:int)->float:
-    n = 2 ** z
-    lat_rad = math.atan(math.sinh(math.pi * (1 - 2 * y / n)))
-    return math.degrees(lat_rad)
-
-def tile_path(cache_root:str, z:int,x:int,y:int)->str:
-    '''Tile index to path where it should be in cache'''
-    return os.path.join(cache_root, str(z), str(x), f"{y}.png")
-
-def latlon_to_app_xyz(lat_deg, lon_deg, alt_m=0.0, R=1.0):
-    """
-    Convert WGS84 (lat, lon, alt) to application caresian
-
-    NOTE - longitude is flipped and rotate by 180 degrees
-    """
-    # Convert geodetic → ECEF meters
-    lat = math.radians(lat_deg)
-    lon = math.radians(lon_deg)
-    a = WGS84_A
-    e2 = WGS84_E2
-    N = a / math.sqrt(1 - e2 * math.sin(lat)**2)
-
-    xe = (N + alt_m) * math.cos(lat) * math.cos(lon)
-    ye = (N + alt_m) * math.cos(lat) * math.sin(lon)
-    ze = (N * (1 - e2) + alt_m) * math.sin(lat)
-
-    # Scale Earth radius to match your scene (R corresponds to a=6378137)
-    scale = R / WGS84_A
-
-    # Convert ECEF → app’s coordinate frame:
-    # Equivalent to lon' = -(lon + 180)
-    lon_app = math.radians(-(lon_deg + 180))
-    lat_app = math.radians(lat_deg)
-    x = R * math.cos(lat_app) * math.cos(lon_app)
-    y = R * math.sin(lat_app)
-    z = R * math.cos(lat_app) * math.sin(lon_app)
-
-    # Apply altitude offset (in meters → scaled units)
-    x *= ( 1+ alt_m / WGS84_A)
-    y *= ( 1+ alt_m / WGS84_A)
-    z *= ( 1+ alt_m / WGS84_A)
-
-    return x, y, z
 
 #-------------------------------------------------------
 # OpenGL Widget
@@ -141,7 +76,9 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
         # Object holder
         self.scene = Scene()
 
+        # Test drawings
         self.load_satellite()
+        self.add_track()
 
 
         #-------------------------------------------------
@@ -215,37 +152,6 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
     def closeEvent(self, ev)->None:
         event.accept()
         super().closeEvent(ev)
-
-    def load_satellite(self)->None:
-        #------------------------------------------------------
-        # Load a satellite
-        base = os.path.dirname(__file__)
-        sat_path = os.path.join(base, "assets/satellite/satellite.obj")
-        sat_mesh = OBJLoader.load(sat_path)
-        sat = SceneObject(sat_mesh)
-        sat.scale = np.array([0.1, 0.1, 0.1])
-        sat.position = np.array([0, 0.87, 0.87])
-
-        dir_vec = -sat.position.astype(float)
-        norm = np.linalg.norm(dir_vec)
-        #if norm == 0:
-        #    continue
-        dir_vec /= norm
-        dx, dy, dz = dir_vec[0], dir_vec[1], dir_vec[2]
-
-        # yaw: rotation around Y so forward (+Z local) points toward dir_vec
-        yaw = np.degrees(np.atan2(dx, dz))
-
-        # pitch: rotation around local X so forward axis tilts up/down toward dir_vec
-        pitch = np.degrees(np.atan2(dy, np.sqrt(dx*dx + dz*dz)))
-
-        # optional small self-spin about local forward axis (roll) or around model Z:
-        roll = 0.0
-        # assign into your satect rotation (X=pitch, Y=yaw, Z=roll)
-        sat.rotation = np.array([pitch, yaw, roll])
-        #------------------------------------------------------
-
-        self.scene.add(sat)
 
 
     def initializeGL(self)->None:
@@ -360,12 +266,7 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
             lat0, lat1 = tile2lat(y+1, level_z), tile2lat(y, level_z)
             self._draw_spherical_tile(lat0, lat1, lon0, lon1, tex, alpha=1.0)
 
-        self.debug_place_markers()
         self.scene.draw()
-
-    def debug_place_markers(self):
-        ''' Draw a test dot in boston '''
-        self.draw_sphere(42.5,-70.8,alt = 100_000, radius_m = 100_000)
 
 
     # ----------------- pending/result handling -----------------
@@ -479,25 +380,27 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
         self.inflight[key] = True
         self.requestTile.emit(z,x,y,TILE_URL)
 
+    def load_satellite(self)->None:
+        #------------------------------------------------------
+        # Load a satellite
+        base = os.path.dirname(__file__)
+        sat_path = os.path.join(base, "assets/satellite/satellite.obj")
+        sat = SceneModel(30, -100, 1250_000, np.array([0.1,0.1,0.1]), sat_path)
+        self.scene.add(sat)
 
-    def draw_sphere(self, lat, lon, alt=0.0, radius_m=100000.0, color=(1.0, 0.0, 0.0)):
-        """
-        Draw a sphere using WGS84 coordinates, aligned to the globe’s tile frame.
-        """
-        x, y, z = latlon_to_app_xyz(lat, lon, alt, R=self.earth_radius)
+    def add_track(self)->None:
+        # Add a single point over radar site
+        self.scene.add(PointSceneObject(lat_deg=45.0, lon_deg=-93.0, alt_m=0.0,
+                                   color=(0, 0, 0), size=16))
 
-        #print ("sphere: ", x,y,z)
+        # Add a polyline (track) connecting positions
+        track_points = [
+            (45.0, -93.0, 0.0),
+            (46.0, -92.5, 0.0),
+            (47.0, -91.8, 0.0)
+        ]
+        self.scene.add(PolyLineSceneObject(track_points, color=(0, 0, 0), width=8))
 
-        # Scale radius from meters to world units
-        scale = self.earth_radius / WGS84_A
-
-        glPushMatrix()
-        glTranslatef(x, y, z)
-        glColor3f(*color)
-        quadric = gluNewQuadric()
-        gluSphere(quadric, radius_m * scale, 24, 24)
-        gluDeleteQuadric(quadric)
-        glPopMatrix()
 
     
     # ----------------- drawing helpers -----------------
