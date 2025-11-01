@@ -1,6 +1,9 @@
 # PyGlobe
 3D Globe in Python / Qt / OpenGL
 
+![Alt text](globe.png?raw=true "Title")
+
+
 # Status
 This is just an idea, so far
 
