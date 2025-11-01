@@ -69,16 +69,6 @@ def latlon_to_tile(lat:float, lon:float, zoom:float)->[int,int]:
     ytile = int((1.0 - math.log(math.tan(lat_rad) + 1 / math.cos(lat_rad)) / math.pi) / 2.0 * n)
     return ytile, xtile
 
-##def latlon_to_app_xyzZ(lat: float, lon:float, R:float=1.0):
-##    '''Convert to lat, lon to XYZ space - note that longitude is flipped to match OpenGL'''
-##    lon += 180
-##    la = math.radians(lat)
-##    lo = math.radians(-lon)  # ← flip sign to restore east-positive orientation
-##    x = R * math.cos(la) * math.cos(lo)
-##    y = R * math.sin(la)
-##    z = R * math.cos(la) * math.sin(lo)
-##    return x, y, z
-
 def tile2lon(x:int, z:int)->float:
      n = 2 ** z
      return x / n * 360.0 - 180.0
@@ -330,9 +320,7 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
 
     def debug_place_markers(self):
         ''' Draw a test dot in boston '''
-        self.earth_radius = 1.0
-        self.earth_radius_m =  WGS84_A
-        self.draw_sphere(42.5,-70.8,alt = 115_000, radius_m = 10_000)
+        self.draw_sphere(42.5,-70.8,alt = 100_000, radius_m = 100_000)
 
 
     # ----------------- pending/result handling -----------------
@@ -418,6 +406,9 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
         -------
         tex_id : np.uint32 : OpenGL texture ID
         '''
+
+        # - Level 3 is in base_textures
+        # - All others in textures
         if key[0] == 3:
             return self.base_textures.get(key)
         else:
@@ -450,7 +441,7 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
         """
         x, y, z = latlon_to_app_xyz(lat, lon, alt, R=self.earth_radius)
 
-        #print (x,y,z)
+        #print ("sphere: ", x,y,z)
 
         # Scale radius from meters to world units
         scale = self.earth_radius / WGS84_A
