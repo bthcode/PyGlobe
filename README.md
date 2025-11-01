@@ -1,7 +1,7 @@
 # PyGlobe
 3D Globe in Python / Qt / OpenGL
 
-![Alt text](globe.png?raw=true "Title")
+![Screenshot](globe.png?raw=true "Example Screenshot")
 
 
 # Status
