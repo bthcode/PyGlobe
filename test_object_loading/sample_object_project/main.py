@@ -39,7 +39,7 @@ class GLWidget(QOpenGLWidget):
         sat_mesh = OBJLoader.load(sat_path)
         for i in range(3):
             sat = SceneObject(sat_mesh)
-            sat.scale = np.array([0.5, 0.5, 0.5])
+            sat.scale = np.array([0.2, 0.2, 0.2])
             self.scene.add(sat)
 
     def resizeGL(self, w, h):

@@ -25,6 +25,7 @@ from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QThread, pyqtSlot
 from PyQt5.QtWidgets import QApplication, QMainWindow, QOpenGLWidget
 from OpenGL.GL import *
 from OpenGL.GLU import *
+from obj_loader import OBJLoader, SceneObject, Scene
 
 import math
 import numpy as np
@@ -137,6 +138,12 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
         self.zoom_level = 3
         self.center_lla = {'lat' : 0, 'lon': 0, 'alt': 0}
 
+        # Object holder
+        self.scene = Scene()
+
+        self.load_satellite()
+
+
         #-------------------------------------------------
         # Life cycle of a tile:
         #-------------------------------------------------
@@ -209,7 +216,46 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
         event.accept()
         super().closeEvent(ev)
 
+    def load_satellite(self)->None:
+        #------------------------------------------------------
+        # Load a satellite
+        base = os.path.dirname(__file__)
+        sat_path = os.path.join(base, "assets/satellite/satellite.obj")
+        sat_mesh = OBJLoader.load(sat_path)
+        sat = SceneObject(sat_mesh)
+        sat.scale = np.array([0.1, 0.1, 0.1])
+        sat.position = np.array([0, 0.87, 0.87])
+
+        dir_vec = -sat.position.astype(float)
+        norm = np.linalg.norm(dir_vec)
+        #if norm == 0:
+        #    continue
+        dir_vec /= norm
+        dx, dy, dz = dir_vec[0], dir_vec[1], dir_vec[2]
+
+        # yaw: rotation around Y so forward (+Z local) points toward dir_vec
+        yaw = np.degrees(np.atan2(dx, dz))
+
+        # pitch: rotation around local X so forward axis tilts up/down toward dir_vec
+        pitch = np.degrees(np.atan2(dy, np.sqrt(dx*dx + dz*dz)))
+
+        # optional small self-spin about local forward axis (roll) or around model Z:
+        roll = 0.0
+        # assign into your satect rotation (X=pitch, Y=yaw, Z=roll)
+        sat.rotation = np.array([pitch, yaw, roll])
+        #------------------------------------------------------
+
+        self.scene.add(sat)
+
+
     def initializeGL(self)->None:
+        # This enables lighting
+        ##glEnable(GL_LIGHTING)
+        ##glEnable(GL_LIGHT0)
+        ##glEnable(GL_COLOR_MATERIAL)
+        ##glColorMaterial(GL_FRONT_AND_BACK, GL_AMBIENT_AND_DIFFUSE)
+        ##glShadeModel(GL_SMOOTH)
+
         glEnable(GL_DEPTH_TEST)
         glEnable(GL_TEXTURE_2D)
         glFrontFace(GL_CW)
@@ -315,6 +361,7 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
             self._draw_spherical_tile(lat0, lat1, lon0, lon1, tex, alpha=1.0)
 
         self.debug_place_markers()
+        self.scene.draw()
 
     def debug_place_markers(self):
         ''' Draw a test dot in boston '''

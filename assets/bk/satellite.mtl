@@ -1,0 +1,6 @@
+newmtl Body
+Kd 0.7 0.7 0.7
+
+newmtl Panel
+Kd 0.1 0.2 0.8
+

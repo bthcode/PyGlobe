@@ -10,6 +10,7 @@ This is just an idea, so far
 # Code Index
 - dynamic.py - main app, displays an opengl globe with map tiles
 - tile_fetcher.py - threaded qt clss for fetching tiles
+- obj_loader.py - load and manage scene objects
 - test_object_loading  - test code for loading and displaying models
     - triangle : simple rotating triangle
     - satellite : load and rotate a satellite model
