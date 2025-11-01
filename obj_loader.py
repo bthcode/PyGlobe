@@ -1,14 +1,57 @@
 from OpenGL.GL import *
+from OpenGL.GL import *
+from OpenGL.GLU import *
 import numpy as np
 import os
 from coord_utils import *
 
 from contextlib import contextmanager
 
+# ---------------------------------------------------------------
+# Ray helpers for object selection
+# ---------------------------------------------------------------
+def screen_to_world_ray(x, y, viewport):
+    """Compute a ray from camera through screen point (x,y)."""
+    modelview = glGetDoublev(GL_MODELVIEW_MATRIX)
+    projection = glGetDoublev(GL_PROJECTION_MATRIX)
+    winY = viewport[3] - float(y)  # invert Y for OpenGL
+    near = np.array(gluUnProject(x, winY, 0.0, modelview, projection, viewport))
+    far  = np.array(gluUnProject(x, winY, 1.0, modelview, projection, viewport))
+    dir_vec = far - near
+    dir_vec /= np.linalg.norm(dir_vec)
+    return near, dir_vec
+
+def ray_point_distance(ray_origin, ray_dir, point):
+    v = point - ray_origin
+    t = np.dot(v, ray_dir)
+    closest = ray_origin + t * ray_dir
+    return np.linalg.norm(point - closest)
+
+def ray_segment_distance(ray_origin, ray_dir, p1, p2):
+    v = p2 - p1
+    w0 = ray_origin - p1
+    a = np.dot(v, v)
+    b = np.dot(v, ray_dir)
+    c = np.dot(ray_dir, ray_dir)
+    d = np.dot(v, w0)
+    e = np.dot(ray_dir, w0)
+    denom = a * c - b * b
+    if denom == 0:
+        return float("inf")
+    sc = (b * e - c * d) / denom
+    tc = (a * e - b * d) / denom
+    sc = np.clip(sc, 0.0, 1.0)
+    pc = p1 + sc * v
+    qc = ray_origin + tc * ray_dir
+    return np.linalg.norm(pc - qc)
+
+
+
 @contextmanager
 def gl_state_guard(save_current_color=True,
                    save_point_size=True,
                    save_line_width=True):
+    '''Caches opengl state and returns it on exit'''
     # Save
     prev_color = None
     prev_point_size = None
@@ -101,34 +144,12 @@ class OBJLoader:
 
 
 class SceneObject:
-    def __init__(self, mesh):
-        self.mesh = mesh
-        self.position = np.zeros(3)
-        self.rotation = np.zeros(3)
-        self.scale = np.ones(3)
-
     def draw(self):
-        glPushMatrix()
-        glTranslatef(*self.position)
-        glRotatef(self.rotation[0], 1, 0, 0)
-        glRotatef(self.rotation[1], 0, 1, 0)
-        glRotatef(self.rotation[2], 0, 0, 1)
-        glScalef(*self.scale)
+        pass
+    def on_click(self):
+        print(f"{self.__class__.__name__} clicked")
 
-        glBegin(GL_TRIANGLES)
-        for face in self.mesh.faces:
-            for vi, ni, matname in face:
-                mat = self.mesh.materials.get(matname)
-                if mat:
-                    glColor3fv(mat.diffuse)
-                if len(self.mesh.normals) > 0:
-                    glNormal3fv(self.mesh.normals[ni])
-                glVertex3fv(self.mesh.vertices[vi])
-        glEnd()
-
-        glPopMatrix()
-
-class SceneModel:
+class SceneModel(SceneObject):
     def __init__(self, lat_deg, lon_deg, alt_m, scale, obj_path):
         self.lat_deg = lat_deg
         self.lon_deg = lon_deg
@@ -182,7 +203,7 @@ class SceneModel:
 # ---------------------------------------------------------------------
 class PointSceneObject(SceneObject):
     def __init__(self, lat_deg, lon_deg, alt_m=0.0, color=(1.0, 0.0, 0.0), size=15.0):
-        super().__init__(mesh=None)
+        super().__init__()
         self.lat = lat_deg
         self.lon = lon_deg
         self.alt = alt_m
@@ -211,7 +232,7 @@ class PolyLineSceneObject(SceneObject):
         """
         points_wgs84: list of (lat, lon, alt_m)
         """
-        super().__init__(mesh=None)
+        super().__init__()
         self.points_wgs84 = points_wgs84
         self.color = color
         self.width = width
@@ -247,6 +268,27 @@ class Scene:
     def draw(self):
         for obj in self.objects:
             obj.draw()
+
+    def pick(self, x, y, viewport):
+        """Return the clicked object or None"""
+        ray_origin, ray_dir = screen_to_world_ray(x, y, viewport)
+        min_dist = float("inf")
+        picked = None
+
+        for obj in self.objects:
+            if isinstance(obj, PointSceneObject):
+                d = ray_point_distance(ray_origin, ray_dir, obj.xyz)
+                if d < 0.02 and d < min_dist:  # threshold in world units
+                    picked, min_dist = obj, d
+
+            elif isinstance(obj, PolyLineSceneObject):
+                for p1, p2 in zip(obj.points_xyz[:-1], obj.points_xyz[1:]):
+                    d = ray_segment_distance(ray_origin, ray_dir, p1, p2)
+                    if d < 0.02 and d < min_dist:
+                        picked, min_dist = obj, d
+
+        return picked
+
 
 ##    def draw_sphere(self, lat, lon, alt=0.0, radius_m=100000.0, color=(1.0, 0.0, 0.0)):
 ##        """

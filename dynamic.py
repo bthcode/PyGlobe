@@ -560,9 +560,21 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
                 self.request_tile((self.zoom_level, x, y))
 
     # ----------------- interaction -----------------
-    def mousePressEvent(self, ev)->None: 
-        '''Beginning of mouse move'''
-        self.last_pos = ev.pos()
+    def mousePressEvent(self, event):
+        if event.button() == Qt.RightButton:
+            x, y = event.x(), event.y()
+            viewport = glGetIntegerv(GL_VIEWPORT)
+            picked = self.scene.pick(x, y, viewport)
+            if picked:
+                picked.on_click()
+            else:
+                print("Nothing picked")
+        else:
+            self.last_pos = event.pos()
+
+    #def mousePressEvent(self, ev)->None: 
+    #    '''Beginning of mouse move'''
+    #    self.last_pos = ev.pos()
 
     def mouseMoveEvent(self, ev)->None:
         '''End of mouse move'''
