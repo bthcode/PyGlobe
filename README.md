@@ -15,3 +15,16 @@ This is just an idea, so far
     - triangle : simple rotating triangle
     - satellite : load and rotate a satellite model
     - sample_object_project : models integrated into a project, satellites orbit earth
+
+# Prepreqs
+
+```
+conda create --name pyglobe pyside6
+conda activate pyglobe
+conda install requests numpy pyopengl pillow
+```
+
+# Run
+
+> python dynamic.py
+
