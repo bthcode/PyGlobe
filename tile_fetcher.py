@@ -1,14 +1,14 @@
 import os
 import math
-from PyQt5.QtCore import (
-    QObject, pyqtSignal, pyqtSlot, QThread, QTimer,
+from PySide6.QtCore import (
+    QObject, Signal, Slot, QThread, QTimer,
     QUrl, QCoreApplication, QMetaObject
 )
-from PyQt5.QtWidgets import (
+from PySide6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QPushButton, QLabel
 )
-from PyQt5.QtGui import QPixmap
-from PyQt5.QtNetwork import QNetworkAccessManager, QNetworkRequest, QNetworkReply
+from PySide6.QtGui import QPixmap
+from PySide6.QtNetwork import QNetworkAccessManager, QNetworkRequest, QNetworkReply
 
 # ---------------------------------------------------------------------------
 # TileFetcher: lives entirely in its own QThread
@@ -25,7 +25,7 @@ class TileFetcher(QObject):
     - Emits tileReady when a tile is loaded
     '''
 
-    tileReady = pyqtSignal(int, int, int, bytes)  # z, x, y, image data
+    tileReady = Signal(int, int, int, bytes)  # z, x, y, image data
 
     def __init__(self, cache_dir="cache", parent=None):
         super().__init__(parent)
@@ -45,7 +45,7 @@ class TileFetcher(QObject):
 
     # ------------------------ slots (thread-safe) ------------------------
 
-    @pyqtSlot()
+    @Slot()
     def shutdown(self)->None:
         """Cleanly stop timers and pending operations."""
         self.timer.stop()
@@ -55,14 +55,14 @@ class TileFetcher(QObject):
         self.pending.clear()
         self.requested.clear()
 
-    @pyqtSlot(int, int, int)
+    @Slot(int, int, int)
     def setAimpoint(self, zoom:int, x:int, y:int) -> None:
         """Set the current aimpoint (center tile)."""
         self.aimpoint = (zoom, x, y)
         # reprioritize queue
         self.pending.sort(key=lambda item: self._tile_distance(item, self.aimpoint))
 
-    @pyqtSlot()
+    @Slot()
     def reset(self):
         """Clear pending and active requests."""
         for reply in list(self.active.values()):
@@ -71,7 +71,7 @@ class TileFetcher(QObject):
         self.active.clear()
         self.requested.clear()
 
-    @pyqtSlot(int, int, int, str)
+    @Slot(int, int, int, str)
     def requestTile(self, z, x, y, url_template):
         """Queue or start a tile request."""
         cache_path = os.path.join(self.cache_dir, str(z), str(x), f"{y}.png")
@@ -133,9 +133,9 @@ class TileFetcher(QObject):
 # ---------------------------------------------------------------------------
 
 class TileViewer(QWidget):
-    requestTile = pyqtSignal(int, int, int, str)
-    setAimpoint = pyqtSignal(int, int, int)
-    resetFetcher = pyqtSignal()
+    requestTile = Signal(int, int, int, str)
+    setAimpoint = Signal(int, int, int)
+    resetFetcher = Signal()
 
     def __init__(self):
         super().__init__()
@@ -170,7 +170,7 @@ class TileViewer(QWidget):
                     url_template,
                 )
 
-    @pyqtSlot(int, int, int, bytes)
+    @Slot(int, int, int, bytes)
     def onTileReady(self, z, x, y, data):
         print(f"Tile ready: {z}/{x}/{y}")
         pix = QPixmap()

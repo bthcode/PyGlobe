@@ -2,7 +2,7 @@
 # Offline, disk-only globe with tile-aligned quads, LOD blending, and thread-safe GL uploads.
 #
 # Requirements:
-#   pip install PyQt5 PyOpenGL Pillow numpy
+#   pip install PySide6 PyOpenGL Pillow numpy
 #
 # Cache layout:
 #   ./cache/{z}/{x}/{y}.png
@@ -19,13 +19,14 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 import pathlib
 
-from PyQt5 import QtCore, QtWidgets, QtGui
-from PyQt5.QtNetwork import QNetworkAccessManager
-from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QThread, pyqtSlot
-from PyQt5.QtWidgets import QApplication, QMainWindow, QOpenGLWidget
+from PySide6 import QtCore, QtWidgets, QtGui
+from PySide6.QtNetwork import QNetworkAccessManager
+from PySide6.QtCore import Qt, QTimer, Signal, QThread, Slot
+from PySide6.QtWidgets import QApplication, QMainWindow
+from PySide6.QtOpenGLWidgets import QOpenGLWidget
 from OpenGL.GL import *
 from OpenGL.GLU import *
-from obj_loader import OBJLoader, SceneObject, Scene, PointSceneObject, PolyLineSceneObject, SceneModel
+from obj_loader import OBJLoader, SceneObject, Scene, PointSceneObject, PolyLineSceneObject, SceneModel, draw_pick_ray, draw_ray_origin
 
 import math
 import numpy as np
@@ -49,17 +50,44 @@ MAX_GPU_TEXTURES = 512
 CHECKER_COLOR_A = 200
 CHECKER_COLOR_B = 60
 
+import numpy as np
+from OpenGL.GL import *
+from OpenGL.GLU import *
+
+# ---------- drawing helpers ----------
+def draw_sphere_at(pos, radius=0.03, color=(1.0, 1.0, 0.0)):
+    """Small sphere marker (color default yellow)."""
+    glPushAttrib(GL_CURRENT_BIT)
+    glColor3f(*color)
+    glPushMatrix()
+    glTranslatef(float(pos[0]), float(pos[1]), float(pos[2]))
+    quad = gluNewQuadric()
+    gluSphere(quad, radius, 12, 12)
+    gluDeleteQuadric(quad)
+    glPopMatrix()
+    glPopAttrib()
+
+def draw_pick_ray(ray_origin, ray_dir, length=2.0, color=(1.0, 0.0, 0.0)):
+    glPushAttrib(GL_CURRENT_BIT | GL_LINE_BIT)
+    glColor3f(*color)
+    glLineWidth(2.0)
+    glBegin(GL_LINES)
+    glVertex3fv(ray_origin)
+    glVertex3fv(ray_origin + ray_dir * length)
+    glEnd()
+    glPopAttrib()
+
 
 
 #-------------------------------------------------------
 # OpenGL Widget
 #-------------------------------------------------------
 class GlobeOfflineTileAligned(QOpenGLWidget):
-    infoSig = pyqtSignal(dict)
-    requestTile = pyqtSignal(int, int, int, str)
-    setAimpoint = pyqtSignal(int, int, int)
-    resetFetcher = pyqtSignal()
-    sigShutdownFetcher = pyqtSignal()
+    infoSig = Signal(dict)
+    requestTile = Signal(int, int, int, str)
+    setAimpoint = Signal(int, int, int)
+    resetFetcher = Signal()
+    sigShutdownFetcher = Signal()
     def __init__(self):
         super().__init__()
         self.setMinimumSize(900,600)
@@ -75,6 +103,11 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
 
         # Object holder
         self.scene = Scene()
+
+        # Picking stuff
+        self.modelview = None
+        self.viewport = None
+        self.projection = None
 
         # Test drawings
         self.load_satellite()
@@ -237,6 +270,11 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
         glRotatef(self.rot_x,1,0,0)
         glRotatef(self.rot_y,0,1,0)
 
+        # For picking
+        self.modelview = glGetDoublev(GL_MODELVIEW_MATRIX)
+        self.projection = glGetDoublev(GL_PROJECTION_MATRIX)
+        self.viewport = glGetIntegerv(GL_VIEWPORT)
+
         #---------------------------------------------
         # Base Layer
         #---------------------------------------------
@@ -267,10 +305,27 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
             self._draw_spherical_tile(lat0, lat1, lon0, lon1, tex, alpha=1.0)
 
         self.scene.draw()
+        #if self.scene.last_pick_ray is not None:
+        #    ray_origin, ray_dir = self.scene.last_pick_ray
+        #    glPushMatrix()
+        #    glRotatef(self.rot_x, 1, 0, 0)
+        #    glRotatef(self.rot_y, 0, 1, 0)
+        #    draw_pick_ray(ray_origin, ray_dir, length=2.0)
+        #    draw_ray_origin(ray_origin, radius=0.025, color=(0,1,0))
+        #    glPopMatrix()
+
+        if getattr(self.scene, "last_pick_debug", None):
+            dbg = self.scene.last_pick_debug
+            draw_sphere_at(dbg["cam_world"], 0.03, (1,1,0))  # yellow camera
+            draw_sphere_at(dbg["ray_origin"], 0.02, (0,1,0))  # green ray origin
+            draw_pick_ray(dbg["ray_origin"], dbg["ray_dir"], 2.5, (1,0,0))  # red line
+            if "hit_point" in dbg and dbg["hit_point"] is not None:
+                draw_sphere_at(dbg["hit_point"], 0.02, (0,0,1))  # blue intersection
+
 
 
     # ----------------- pending/result handling -----------------
-    @pyqtSlot(int,int,int,bytes)
+    @Slot(int,int,int,bytes)
     def onTileReady(self, z: int, x:int, y:int, data:bytes) ->None:
         '''Event handler from TileFetcher::tileReady : transfer to pending queue'''
         key = (z,x,y)
@@ -342,7 +397,7 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
                     pass
 
     # ----------------- texture & request helpers -----------------
-    def get_tile_texture(self, key: tuple(int,int,int)) -> np.uint32:
+    def get_tile_texture(self, key: [int,int,int]) -> np.uint32:
         '''Retrieve a texture
         Params
         ------
@@ -360,7 +415,7 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
         else:
             return self.textures.get(key)
 
-    def request_tile(self,key: tuple(int,int,int))->None:
+    def request_tile(self,key: [int,int,int])->None:
         '''If a tile is not already loaded, emit a request
         Params
         ------
@@ -563,12 +618,30 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
     def mousePressEvent(self, event):
         if event.button() == Qt.RightButton:
             x, y = event.x(), event.y()
-            viewport = glGetIntegerv(GL_VIEWPORT)
-            picked = self.scene.pick(x, y, viewport)
-            if picked:
-                picked.on_click()
-            else:
-                print("Nothing picked")
+            ##rx = math.radians(self.rot_x)
+            ##ry = math.radians(self.rot_y)
+            ##cx = self.distance * math.sin(ry) * math.cos(rx)
+            ##cy = -self.distance * math.sin(rx)
+            ##cz = self.distance * math.cos(ry) * math.cos(rx)
+            ##camera_pos = np.array([cx, cy, cz], dtype=float)
+            ##picked = self.scene.pick(x, y, camera_pos, viewport)
+
+            w = self.width()
+            h = self.height()
+            #ray_origin, ray_dir = self.scene.pick(x, y, w, h, self.rot_x, self.rot_y)
+            self.scene.pick(x,y, self)
+
+
+            #picked, dist = self.scene.pick(x, y,
+            #                   modelview=self.modelview,
+            #                   projection=self.projection,
+            #                   viewport=self.viewport)
+
+            #print (picked)
+            #if picked:
+            #    picked.on_click()
+            #else:
+            #    print("Nothing picked")
         else:
             self.last_pos = event.pos()
 
@@ -599,7 +672,8 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
 
 class MainWindow(QtWidgets.QWidget):
     def __init__(self):
-        QtWidgets.QMainWindow.__init__(self)
+        #QtWidgets.QMainWindow.__init__(self)
+        super().__init__()
         hbox = QtWidgets.QHBoxLayout()
         vbox = QtWidgets.QVBoxLayout()
         self.text = QtWidgets.QLabel('Label')
