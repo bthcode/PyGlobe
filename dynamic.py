@@ -9,16 +9,22 @@
 #
 # Place tiles up to z=5 (or whatever you have) in that layout and run this script.
 
-import sys, os, math, threading, queue, pprint
-from collections import OrderedDict
-import requests
-from io import BytesIO
-import time
 
+# system packages 
+import math, os, pathlib, pprint, queue, sys, requests, threading, time,
+from collections import OrderedDict
+from io import BytesIO
+
+# additional packages
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
-import pathlib
 
+# this project packages 
+from tile_fetcher import TileFetcher
+from coord_utils import *
+from obj_loader import OBJLoader, SceneObject, Scene, PointSceneObject, PolyLineSceneObject, SceneModel, draw_pick_ray, draw_ray_origin
+
+# pyside and opengl
 from PySide6 import QtCore, QtWidgets, QtGui
 from PySide6.QtNetwork import QNetworkAccessManager
 from PySide6.QtCore import Qt, QTimer, Signal, QThread, Slot
@@ -26,14 +32,9 @@ from PySide6.QtWidgets import QApplication, QMainWindow
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
 from OpenGL.GL import *
 from OpenGL.GLU import *
-from obj_loader import OBJLoader, SceneObject, Scene, PointSceneObject, PolyLineSceneObject, SceneModel, draw_pick_ray, draw_ray_origin
-
-import math
-import numpy as np
 
 
-from tile_fetcher import TileFetcher
-from coord_utils import *
+
 # ----------------- Config -----------------
 
 DOWNLOAD_TIMEOUT = 10
@@ -50,9 +51,6 @@ MAX_GPU_TEXTURES = 512
 CHECKER_COLOR_A = 200
 CHECKER_COLOR_B = 60
 
-import numpy as np
-from OpenGL.GL import *
-from OpenGL.GLU import *
 
 # ---------- drawing helpers ----------
 def draw_sphere_at(pos, radius=0.03, color=(1.0, 1.0, 0.0)):
@@ -76,6 +74,7 @@ def draw_pick_ray(ray_origin, ray_dir, length=2.0, color=(1.0, 0.0, 0.0)):
     glVertex3fv(ray_origin + ray_dir * length)
     glEnd()
     glPopAttrib()
+#---------------------------------------------
 
 
 
@@ -271,9 +270,6 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
         # Base Layer
         #---------------------------------------------
         for key, tex in self.base_textures.items():
-            #if key[1] != 4 or key[2] != 4:
-            #    continue
-            #print (f"plotting {key}")
             z = key[0]
             x = key[1]
             y = key[2]
@@ -297,14 +293,6 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
             self._draw_spherical_tile(lat0, lat1, lon0, lon1, tex, alpha=1.0)
 
         self.scene.draw()
-        #if self.scene.last_pick_ray is not None:
-        #    ray_origin, ray_dir = self.scene.last_pick_ray
-        #    glPushMatrix()
-        #    glRotatef(self.rot_x, 1, 0, 0)
-        #    glRotatef(self.rot_y, 0, 1, 0)
-        #    draw_pick_ray(ray_origin, ray_dir, length=2.0)
-        #    draw_ray_origin(ray_origin, radius=0.025, color=(0,1,0))
-        #    glPopMatrix()
 
         if getattr(self.scene, "last_pick_debug", None):
             dbg = self.scene.last_pick_debug
