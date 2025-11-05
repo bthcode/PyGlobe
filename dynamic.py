@@ -189,17 +189,9 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
 
     def initializeGL(self)->None:
         # This enables lighting
-        ##glEnable(GL_LIGHTING)
-        ##glEnable(GL_LIGHT0)
-        ##glEnable(GL_COLOR_MATERIAL)
-        ##glColorMaterial(GL_FRONT_AND_BACK, GL_AMBIENT_AND_DIFFUSE)
-        ##glShadeModel(GL_SMOOTH)
-
         glEnable(GL_DEPTH_TEST)
         glEnable(GL_TEXTURE_2D)
         glFrontFace(GL_CW)
-        #glEnable(GL_CULL_FACE)
-        #glCullFace(GL_BACK)
         glEnable(GL_BLEND)
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
         glClearColor(0.07,0.08,0.1,1.0)
@@ -618,36 +610,14 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
     def mousePressEvent(self, event):
         if event.button() == Qt.RightButton:
             x, y = event.x(), event.y()
-            ##rx = math.radians(self.rot_x)
-            ##ry = math.radians(self.rot_y)
-            ##cx = self.distance * math.sin(ry) * math.cos(rx)
-            ##cy = -self.distance * math.sin(rx)
-            ##cz = self.distance * math.cos(ry) * math.cos(rx)
-            ##camera_pos = np.array([cx, cy, cz], dtype=float)
-            ##picked = self.scene.pick(x, y, camera_pos, viewport)
 
             w = self.width()
             h = self.height()
-            #ray_origin, ray_dir = self.scene.pick(x, y, w, h, self.rot_x, self.rot_y)
             self.scene.pick(x,y, self)
 
 
-            #picked, dist = self.scene.pick(x, y,
-            #                   modelview=self.modelview,
-            #                   projection=self.projection,
-            #                   viewport=self.viewport)
-
-            #print (picked)
-            #if picked:
-            #    picked.on_click()
-            #else:
-            #    print("Nothing picked")
         else:
             self.last_pos = event.pos()
-
-    #def mousePressEvent(self, ev)->None: 
-    #    '''Beginning of mouse move'''
-    #    self.last_pos = ev.pos()
 
     def mouseMoveEvent(self, ev)->None:
         '''End of mouse move'''
@@ -672,7 +642,6 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
 
 class MainWindow(QtWidgets.QWidget):
     def __init__(self):
-        #QtWidgets.QMainWindow.__init__(self)
         super().__init__()
         hbox = QtWidgets.QHBoxLayout()
         vbox = QtWidgets.QVBoxLayout()
