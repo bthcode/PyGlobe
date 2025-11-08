@@ -235,7 +235,7 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
         x, y, z = point
 
         # Convert to lat/lon matching latlon_to_app_xyz()
-        lat = math.degrees(math.asin(y))
+        lat = -math.degrees(math.asin(y))
         lon = -math.degrees(math.atan2(x, z)) 
 
         # Normalize longitude to [-180, 180]
@@ -245,38 +245,6 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
             lon -= 360
 
         return lat, lon
-
-
-    def orig_get_center_latlon(self) -> [float,float]:
-        '''Calculate where the camera is currently pointing'''
-        # Compute camera position in world coords
-        rx = math.radians(self.rot_x)
-        ry = math.radians(self.rot_y)
-        cx = self.distance * math.sin(ry) * math.cos(rx)
-        cy = -self.distance * math.sin(rx)
-        cz = self.distance * math.cos(ry) * math.cos(rx)
-        camera_pos = np.array([cx, cy, cz], dtype=float)
-
-        self.camera_pos = camera_pos
-
-        # Direction vector toward origin
-        camera_dir = -camera_pos / np.linalg.norm(camera_pos)
-
-        # Ray-sphere intersection (R = 1)
-        a = np.dot(camera_dir, camera_dir)
-        b = 2 * np.dot(camera_pos, camera_dir)
-        c = np.dot(camera_pos, camera_pos) - 1
-        disc = b*b - 4*a*c
-        if disc < 0:
-            return None
-        t = (-b - math.sqrt(disc)) / (2*a)
-        point = camera_pos + t * camera_dir
-
-        x, y, z = point
-        lat = math.degrees(math.asin(y))
-        lon = -math.degrees(math.atan2(z, x))  # flip sign to match your conversion
-
-        return -lat, -lon
 
     def load_base_textures(self):
         '''Ensure lowest level of map is always loaded'''
