@@ -11,7 +11,7 @@
 
 
 # system packages 
-import math, os, pathlib, pprint, queue, sys, requests, threading, time,
+import math, os, pathlib, pprint, queue, sys, requests, threading, time
 from collections import OrderedDict
 from io import BytesIO
 
@@ -212,6 +212,8 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
         cy = -self.distance * math.sin(rx)
         cz = self.distance * math.cos(ry) * math.cos(rx)
         camera_pos = np.array([cx, cy, cz], dtype=float)
+
+        self.camera_pos = camera_pos
 
         # Direction vector toward origin
         camera_dir = -camera_pos / np.linalg.norm(camera_pos)
@@ -525,7 +527,15 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
         self.infoSig.emit({'level' : self.zoom_level,
                            'center_lla' : self.center_lla,
                            'current_tile_x' : self.current_tile_x,
-                           'current_tile_y' : self.current_tile_y} )
+                           'current_tile_y' : self.current_tile_y,
+                           'camera_pos' : { 'x' : self.camera_pos[0],
+                                            'y' : self.camera_pos[1],
+                                            'z' : self.camera_pos[2] 
+                                           },
+                           'rot' : { 'x' : self.rot_x,
+                                     'y' : self.rot_y }
+                           }
+                          )
 
 
     def updateScene(self)->None:
@@ -643,12 +653,29 @@ class MainWindow(QtWidgets.QWidget):
         self.globe.updateScene()
 
     def on_window(self, info_dict: dict):
-        s = f"Level: {info_dict['level']}\n"
-        s += f"Lat: {info_dict['center_lla']['lat']:.2f}\n"
-        s += f"Lon: {info_dict['center_lla']['lon']:.2f}\n"
-        s += f"Alt: {info_dict['center_lla']['alt']:.2f}\n"
-        s += f"X:   {info_dict['current_tile_x']}\n"
-        s += f"Y:   {info_dict['current_tile_y']}\n"
+        s =  f"Level:    {info_dict['level']}\n"
+        s += f"Tile X:   {info_dict['current_tile_x']}\n"
+        s += f"Tile Y:   {info_dict['current_tile_y']}\n\n"
+
+        s += f"Lat:      {info_dict['center_lla']['lat']:.2f}\n"
+        s += f"Lon:      {info_dict['center_lla']['lon']:.2f}\n"
+        s += f"Alt:      {info_dict['center_lla']['alt']:.2f}\n\n"
+
+        X,Y,Z = latlon_to_ecef( info_dict['center_lla']['lat'],
+                                info_dict['center_lla']['lon'],
+                                0 )
+
+        s += f"ECEF X:   {X:.1f}\n"
+        s += f"ECEF Y:   {Y:.1f}\n"
+        s += f"ECEF Z:   {Z:.1f}\n\n"
+
+        s += f"CAM  X:   {info_dict['camera_pos']['x']:.1f}\n"
+        s += f"CAM  Y:   {info_dict['camera_pos']['y']:.1f}\n"
+        s += f"CAM  Z:   {info_dict['camera_pos']['z']:.1f}\n\n"
+
+        s += f"Rot X:    {info_dict['rot']['x']:.1f}\n"
+        s += f"Rot Y:    {info_dict['rot']['y']:.1f}\n"
+
         self.text.setText(s)
 
 
