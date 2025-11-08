@@ -42,7 +42,7 @@ TILE_URL = "https://tile.openstreetmap.org/{z}/{x}/{y}.png"  # common XYZ server
 CACHE_ROOT= "./osm_cache"
 
 USER_AGENT = "PyGlobe Example/1.0 (your_email@example.com)"  # set a sensible UA
-TILE_SIZE = 256
+TILE_SIZE = 512
 MIN_Z = 2
 MAX_Z = 9    # set to highest zoom level you have in cache
 MAX_GPU_TEXTURES = 512
@@ -236,7 +236,7 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
 
         # Convert to lat/lon matching latlon_to_app_xyz()
         lat = math.degrees(math.asin(y))
-        lon = math.degrees(math.atan2(x, z)) 
+        lon = -math.degrees(math.atan2(x, z)) 
 
         # Normalize longitude to [-180, 180]
         if lon < -180:
