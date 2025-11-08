@@ -21,8 +21,6 @@ from PIL import Image, ImageDraw, ImageFont
 
 # this project packages 
 from tile_fetcher import TileFetcher
-from coord_utils import *
-from obj_loader import OBJLoader, SceneObject, Scene, PointSceneObject, PolyLineSceneObject, SceneModel, draw_pick_ray, draw_ray_origin
 
 # pyside and opengl
 from PySide6 import QtCore, QtWidgets, QtGui
@@ -32,7 +30,6 @@ from PySide6.QtWidgets import QApplication, QMainWindow
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
 from OpenGL.GL import *
 from OpenGL.GLU import *
-
 
 
 # ----------------- Config -----------------
@@ -52,30 +49,422 @@ CHECKER_COLOR_A = 200
 CHECKER_COLOR_B = 60
 
 
-# ---------- drawing helpers ----------
-def draw_sphere_at(pos, radius=0.03, color=(1.0, 1.0, 0.0)):
-    """Small sphere marker (color default yellow)."""
-    glPushAttrib(GL_CURRENT_BIT)
-    glColor3f(*color)
-    glPushMatrix()
-    glTranslatef(float(pos[0]), float(pos[1]), float(pos[2]))
-    quad = gluNewQuadric()
-    gluSphere(quad, radius, 12, 12)
-    gluDeleteQuadric(quad)
-    glPopMatrix()
-    glPopAttrib()
+# -- obj_loader -- #
+from OpenGL.GL import *
+from OpenGL.GL import *
+from OpenGL.GLU import *
+import numpy as np
+import os
+from coord_utils import *
 
-def draw_pick_ray(ray_origin, ray_dir, length=2.0, color=(1.0, 0.0, 0.0)):
-    glPushAttrib(GL_CURRENT_BIT | GL_LINE_BIT)
-    glColor3f(*color)
-    glLineWidth(2.0)
-    glBegin(GL_LINES)
-    glVertex3fv(ray_origin)
-    glVertex3fv(ray_origin + ray_dir * length)
-    glEnd()
-    glPopAttrib()
-#---------------------------------------------
+from contextlib import contextmanager
 
+# -- coord_utils --#
+# Constants
+WGS84_A = 6378137.0        # semi-major axis (m)
+WGS84_F = 1 / 298.257223563
+WGS84_B = WGS84_A * (1 - WGS84_F)
+WGS84_E2 = 1 - (WGS84_B**2 / WGS84_A**2)
+def clamp(a,b,c): 
+    return max(b, min(c, a))
+
+
+# Normalize -180..180 if you prefer
+def norm_angle(a):
+    while a <= -180.0: a += 360.0
+    while a > 180.0: a -= 360.0
+    return a
+
+
+def latlon_to_ecef(lat_deg, lon_deg, alt_m=0.0):
+    """
+    Convert geodetic coordinates (latitude, longitude, altitude)
+    to ECEF (Earth-Centered, Earth-Fixed) coordinates.
+
+    Parameters:
+        lat_deg: Latitude in degrees
+        lon_deg: Longitude in degrees
+        alt_m:   Altitude in meters (default: 0)
+
+    Returns:
+        (X, Y, Z) in meters
+    """
+    # WGS84 ellipsoid constants
+    a = 6378137.0             # semi-major axis (m)
+    f = 1 / 298.257223563     # flattening
+    e2 = f * (2 - f)          # eccentricity squared
+
+    # Convert angles to radians
+    lat = math.radians(lat_deg)
+    lon = math.radians(lon_deg)
+
+    # Prime vertical radius of curvature
+    N = a / math.sqrt(1 - e2 * math.sin(lat)**2)
+
+    # Results
+    X = (N + alt_m) * math.cos(lat) * math.cos(lon)
+    Y = (N + alt_m) * math.cos(lat) * math.sin(lon)
+    Z = (N * (1 - e2) + alt_m) * math.sin(lat)
+
+    return X, Y, Z
+
+def latlon_to_tile(lat:float, lon:float, zoom:float)->[int,int]:
+    '''Returns y,x of tile for a lat lon and zoom level'''
+    n = 2 ** zoom
+    xtile = int((lon + 180.0) / 360.0 * n)
+    lat_rad = math.radians(lat)
+    ytile = int((1.0 - math.log(math.tan(lat_rad) + 1 / math.cos(lat_rad)) / math.pi) / 2.0 * n)
+    return ytile, xtile
+
+def tile2lon(x:int, z:int)->float:
+     n = 2 ** z
+     return x / n * 360.0 - 180.0
+ 
+def tile2lat(y:int, z:int)->float:
+    n = 2 ** z
+    lat_rad = math.atan(math.sinh(math.pi * (1 - 2 * y / n)))
+    return math.degrees(lat_rad)
+
+def tile_path(cache_root:str, z:int,x:int,y:int)->str:
+    '''Tile index to path where it should be in cache'''
+    return os.path.join(cache_root, str(z), str(x), f"{y}.png")
+
+def orig_latlon_to_app_xyz(lat_deg, lon_deg, alt_m=0.0, R=1.0):
+    """
+    Convert WGS84 (lat, lon, alt) to application caresian
+
+    NOTE - longitude is flipped and rotate by 180 degrees
+    """
+    # Convert geodetic → ECEF meters
+    lat = math.radians(lat_deg)
+    lon = math.radians(lon_deg)
+    a = WGS84_A
+    e2 = WGS84_E2
+    N = a / math.sqrt(1 - e2 * math.sin(lat)**2)
+
+    xe = (N + alt_m) * math.cos(lat) * math.cos(lon)
+    ye = (N + alt_m) * math.cos(lat) * math.sin(lon)
+    ze = (N * (1 - e2) + alt_m) * math.sin(lat)
+
+    # Scale Earth radius to match your scene (R corresponds to a=6378137)
+    scale = R / WGS84_A
+
+    # Convert ECEF → app’s coordinate frame:
+    # Equivalent to lon' = -(lon + 180)
+    lon_app = math.radians(-(lon_deg + 180))
+    lat_app = math.radians(lat_deg)
+    x = R * math.cos(lat_app) * math.cos(lon_app)
+    y = R * math.sin(lat_app)
+    z = R * math.cos(lat_app) * math.sin(lon_app)
+
+    # Apply altitude offset (in meters → scaled units)
+    x *= ( 1+ alt_m / WGS84_A)
+    y *= ( 1+ alt_m / WGS84_A)
+    z *= ( 1+ alt_m / WGS84_A)
+
+    return x, y, z
+
+
+def latlon_to_app_xyz(lat_deg, lon_deg, alt_m=0.0, R=1.0):
+    lat = math.radians(lat_deg)
+    lon = math.radians(lon_deg)
+
+    # Shift so lon=0 sits on +Z axis (instead of -X)
+    lon_app = math.radians(-lon_deg + 90)  # <── CHANGE HERE
+    lat_app = math.radians(lat_deg)
+
+    x = R * math.cos(lat_app) * math.cos(lon_app)
+    y = R * math.sin(lat_app)
+    z = R * math.cos(lat_app) * math.sin(lon_app)
+
+    x *= (1 + alt_m / WGS84_A)
+    y *= (1 + alt_m / WGS84_A)
+    z *= (1 + alt_m / WGS84_A)
+    return x, y, z
+
+# -- end coord utils -- #
+
+
+# -- obj loader -- #
+@contextmanager
+def gl_state_guard(save_current_color=True,
+                   save_point_size=True,
+                   save_line_width=True):
+    '''Caches opengl state and returns it on exit'''
+    # Save
+    prev_color = None
+    prev_point_size = None
+    prev_line_width = None
+
+    try:
+        if save_current_color:
+            # GL_CURRENT_COLOR returns 4 floats
+            prev_color = glGetFloatv(GL_CURRENT_COLOR)
+        if save_point_size:
+            prev_point_size = glGetFloatv(GL_POINT_SIZE)
+        if save_line_width:
+            prev_line_width = glGetFloatv(GL_LINE_WIDTH)
+
+        yield  # user code runs here
+
+    finally:
+        # Restore in reverse (order not critical)
+        if save_line_width and prev_line_width is not None:
+            glLineWidth(float(prev_line_width))
+        if save_point_size and prev_point_size is not None:
+            # glPointSize expects a float
+            glPointSize(float(prev_point_size))
+        if save_current_color and prev_color is not None:
+            # prev_color is an array-like of 4 floats
+            glColor4fv(prev_color)
+
+class Mesh:
+    def __init__(self):
+        self.vertices = []
+        self.normals = []
+        self.faces = []
+        self.materials = {}
+
+class Material:
+    def __init__(self, name):
+        self.name = name
+        self.diffuse = [0.8, 0.8, 0.8]
+
+class OBJLoader:
+    @staticmethod
+    def load(path):
+        mesh = Mesh()
+        material = None
+        vertices, normals = [], []
+        current_material = None
+
+        mtl_path = None
+        base_dir = os.path.dirname(path)
+
+        with open(path, "r") as f:
+            for line in f:
+                if line.startswith("mtllib"):
+                    mtl_path = os.path.join(base_dir, line.split()[1].strip())
+                elif line.startswith("usemtl"):
+                    current_material = line.split()[1].strip()
+                elif line.startswith("v "):
+                    vertices.append(list(map(float, line.split()[1:])))
+                elif line.startswith("vn "):
+                    normals.append(list(map(float, line.split()[1:])))
+                elif line.startswith("f "):
+                    face = []
+                    for v in line.split()[1:]:
+                        parts = v.split("/")
+                        vi = int(parts[0]) - 1
+                        ni = int(parts[-1]) - 1 if len(parts) > 2 and parts[-1] else 0
+                        face.append((vi, ni, current_material))
+                    mesh.faces.append(face)
+
+        if mtl_path and os.path.exists(mtl_path):
+            mesh.materials = OBJLoader.load_mtl(mtl_path)
+
+        mesh.vertices = np.array(vertices)
+        mesh.normals = np.array(normals)
+        return mesh
+
+    @staticmethod
+    def load_mtl(path):
+        materials = {}
+        current = None
+        with open(path, "r") as f:
+            for line in f:
+                if line.startswith("newmtl"):
+                    current = Material(line.split()[1].strip())
+                    materials[current.name] = current
+                elif line.startswith("Kd") and current:
+                    current.diffuse = list(map(float, line.split()[1:4]))
+        return materials
+
+class SceneObject:
+    def draw(self):
+        pass
+    def on_click(self):
+        print(f"{self.__class__.__name__} clicked")
+
+class SceneModel:
+    def __init__(self, lat_deg, lon_deg, alt_m, scale, obj_path):
+        self.lat_deg = lat_deg
+        self.lon_deg = lon_deg
+        self.alt_m = alt_m
+        self.scale = scale
+
+        # Convert lat/lon to your app's coordinate frame
+        self.position = np.array(latlon_to_app_xyz(self.lat_deg, self.lon_deg, self.alt_m), dtype=float)
+
+        # Compute the model rotation so it faces the Earth's center
+        self.rotation = self.calc_rotation()
+
+        # Load mesh
+        self.mesh = OBJLoader.load(obj_path)
+
+    def calc_rotation(self):
+        """
+        Robust rotation so model +Z (forward) points to Earth's center and +Y is local up.
+        Handles numerical roundoff and pole singularities.
+        Returns [pitch, yaw, roll] in degrees (X, Y, Z).
+        """
+        pos = self.position.astype(float)
+        # forward: toward center
+        forward = -pos
+        fnorm = np.linalg.norm(forward)
+        if fnorm == 0:
+            # at origin (shouldn't happen) — return identity
+            return np.array([0.0, 0.0, 0.0])
+        forward /= fnorm
+
+        # up: local surface normal (pointing outward)
+        up = pos / np.linalg.norm(pos)
+
+        # right = up x forward
+        right = np.cross(up, forward)
+        rnorm = np.linalg.norm(right)
+
+        if rnorm < 1e-8:
+            # Degenerate: up and forward are (anti)parallel (near the poles).
+            # Choose a stable arbitrary right vector. Prefer world X unless it's collinear.
+            cand = np.array([1.0, 0.0, 0.0])
+            if abs(np.dot(cand, forward)) > 0.99:
+                cand = np.array([0.0, 1.0, 0.0])
+            right = np.cross(cand, forward)
+            rnorm = np.linalg.norm(right)
+            if rnorm < 1e-10:
+                # fallback to identity orientation
+                return np.array([0.0, 0.0, 0.0])
+        right /= rnorm
+
+        # recompute a true orthonormal up
+        up = np.cross(forward, right)
+        up /= np.linalg.norm(up)
+
+        # rotation matrix: columns are local axes in world coords
+        R = np.column_stack((right, up, forward))
+
+        # extract Euler angles (X = pitch, Y = yaw, Z = roll)
+        # be numerically safe: clamp values for asin
+        # pitch from R[1,2] with sign convention used earlier
+        sin_pitch = -R[1, 2]
+        sin_pitch = clamp(sin_pitch, -1.0, 1.0)
+        pitch = math.degrees(math.asin(sin_pitch))
+
+        # For yaw and roll we use atan2 on appropriate elements
+        # yaw = atan2(R[0,2], R[2,2])
+        yaw = math.degrees(math.atan2(R[0, 2], R[2, 2]))
+
+        # roll = atan2(R[1,0], R[1,1])
+        roll = math.degrees(math.atan2(R[1, 0], R[1, 1]))
+
+        return np.array([norm_angle(pitch), norm_angle(yaw), norm_angle(roll)])
+
+
+    # ------------------------------------------------------------------
+    def draw(self):
+        glPushMatrix()
+        glTranslatef(*self.position)
+
+        # Apply rotations in correct local order: X → Y → Z
+        glRotatef(self.rotation[2], 0, 0, 1)  # roll
+        glRotatef(self.rotation[1], 0, 1, 0)  # yaw
+        glRotatef(self.rotation[0], 1, 0, 0)  # pitch
+
+        glScalef(*self.scale)
+
+        # Draw faces
+        glBegin(GL_TRIANGLES)
+        for face in self.mesh.faces:
+            for vi, ni, matname in face:
+                mat = self.mesh.materials.get(matname)
+                if mat:
+                    glColor3fv(mat.diffuse)
+                if len(self.mesh.normals) > 0:
+                    glNormal3fv(self.mesh.normals[ni])
+                glVertex3fv(self.mesh.vertices[vi])
+        glEnd()
+
+        glPopMatrix()
+
+
+# ---------------------------------------------------------------------
+# Point primitive
+# ---------------------------------------------------------------------
+class PointSceneObject(SceneObject):
+    def __init__(self, lat_deg, lon_deg, alt_m=0.0, color=(1.0, 0.0, 0.0), size=15.0):
+        super().__init__()
+        self.lat = lat_deg
+        self.lon = lon_deg
+        self.alt = alt_m
+        self.color = color
+        self.size = size
+        # Precompute world coordinates
+        self.xyz = np.array(latlon_to_app_xyz(self.lat, self.lon, self.alt, R=1.0))
+
+    def draw(self):
+        glPushMatrix()
+        with gl_state_guard():
+            glColor3f(*self.color)
+            glPointSize(self.size)
+
+            glBegin(GL_POINTS)
+            glVertex3f(*self.xyz)
+            glEnd()
+        glPopMatrix()
+
+    def pick_points(self):
+        return [self.xyz]
+
+
+class PolyLineSceneObject(SceneObject):
+    def __init__(self, points_wgs84, color=(1.0, 1.0, 0.0), width=4.0):
+        """
+        points_wgs84: list of (lat, lon, alt_m)
+        """
+        super().__init__()
+        self.points_wgs84 = points_wgs84
+        self.color = color
+        self.width = width
+
+        # Precompute xyz points in app coordinates
+        self.points_xyz = [
+            np.array(latlon_to_app_xyz(lat, lon, alt, R=1.0))
+            for lat, lon, alt in self.points_wgs84
+        ]
+
+    def draw(self):
+        glPushMatrix()
+
+        with gl_state_guard():
+            glColor3f(*self.color)
+            glLineWidth(self.width)
+
+            glBegin(GL_LINE_STRIP)
+            for p in self.points_xyz:
+                glVertex3f(*p)
+            glEnd()
+
+        glPopMatrix()
+        
+    def pick_points(self):
+        return self.points_xyz
+
+
+
+class Scene:
+    def __init__(self):
+        self.objects = []
+        self.last_pick_ray = None  # (origin, dir) for debug drawing
+
+    def add(self, obj):
+        self.objects.append(obj)
+
+    def draw(self):
+        for obj in self.objects:
+            obj.draw()
+
+# -- END obj_loader -- #
 
 
 #-------------------------------------------------------
@@ -307,16 +696,6 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
             self._draw_spherical_tile(lat0, lat1, lon0, lon1, tex, alpha=1.0)
 
         self.scene.draw()
-
-        if getattr(self.scene, "last_pick_debug", None):
-            dbg = self.scene.last_pick_debug
-            draw_sphere_at(dbg["cam_world"], 0.03, (1,1,0))  # yellow camera
-            draw_sphere_at(dbg["ray_origin"], 0.02, (0,1,0))  # green ray origin
-            draw_pick_ray(dbg["ray_origin"], dbg["ray_dir"], 2.5, (1,0,0))  # red line
-            if "hit_point" in dbg and dbg["hit_point"] is not None:
-                draw_sphere_at(dbg["hit_point"], 0.02, (0,0,1))  # blue intersection
-
-
 
     # ----------------- pending/result handling -----------------
     @Slot(int,int,int,bytes)
