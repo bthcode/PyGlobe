@@ -99,6 +99,7 @@ class TileFetcher(QObject):
         az, ax, ay = aim
         return abs(ax - x) + abs(ay - y) + (abs(az - z) * 4)
 
+    @Slot()
     def _dispatch_next(self)->None:
         """If any downloaders are available, start a download"""
         if len(self.active) >= 4 or not self.pending:
@@ -106,16 +107,15 @@ class TileFetcher(QObject):
 
         z, x, y, url_template = self.pending.pop(0)
         url = url_template.format(z=z, x=x, y=y)
-        #print (f"get: {url}")
         req = QNetworkRequest(QUrl(url))
         req.setRawHeader(b"User-Agent", self.user_agent)
+        # This line
         reply = self.nam.get(req)
         reply.finished.connect(lambda: self._on_finished(reply, z, x, y))
         self.active[(z, x, y)] = reply
 
     def _on_finished(self, reply: QNetworkReply, z:int, x:int, y:int)->None:
         """Handle a response from tile server - cache the tile, emit tileReady"""
-        reply.deleteLater()
         self.active.pop((z, x, y), None)
 
         if reply.error() == QNetworkReply.NetworkError.NoError:
@@ -127,6 +127,7 @@ class TileFetcher(QObject):
             self.tileReady.emit(z, x, y, data)
         else:
             print(f"Tile {z}/{x}/{y} failed:", reply.errorString())
+        reply.deleteLater()
 
 # ---------------------------------------------------------------------------
 # GUI: demonstrates interaction
