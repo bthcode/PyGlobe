@@ -76,6 +76,155 @@ def norm_angle(a):
     return a
 
 
+#--------------------------------------------------------------
+# Testing New Conversions
+#--------------------------------------------------------------
+
+# =========================================================
+# CONSTANTS
+# =========================================================
+R_EARTH = 6378137.0   # WGS-84 meters, used to scale ECEF → GL
+
+# =========================================================
+# ROTATION MATRICES AND COORDINATE TRANSFORMS
+# =========================================================
+
+# --- ENU → ECEF rotation matrix ---
+def enu_to_ecef_matrix(lat_rad, lon_rad):
+    sphi, cphi = np.sin(lat_rad), np.cos(lat_rad)
+    slon, clon = np.sin(lon_rad), np.cos(lon_rad)
+
+    return np.array([
+        [-slon,            -sphi*clon,   cphi*clon],
+        [ clon,            -sphi*slon,   cphi*slon],
+        [  0.0,                 cphi,         sphi]
+    ])
+
+
+# --- Your custom ECEF → OpenGL rotation ---
+# OpenGL +Z = ECEF +X
+# OpenGL +X = ECEF -Y
+# OpenGL +Y = ECEF -Z
+R_ecef_to_gl = np.array([
+    [0, -1,  0],   # Xgl = -Yecef
+    [0,  0, 1],   # Ygl = -Zecef
+    [1,  0,  0]    # Zgl = +Xecef
+])
+
+
+# =========================================================
+# LLA → ECEF POSITION (meters)
+# =========================================================
+
+def lla_to_ecef(lat_deg, lon_deg, alt_m):
+    # WGS-84
+    a  = 6378137.0
+    e2 = 6.69437999014e-3
+
+    lat = np.radians(lat_deg)
+    lon = np.radians(lon_deg)
+
+    sphi = np.sin(lat)
+    cphi = np.cos(lat)
+    slon = np.sin(lon)
+    clon = np.cos(lon)
+
+    N = a / np.sqrt(1 - e2 * sphi * sphi)
+
+    x = (N + alt_m) * cphi * clon
+    y = (N + alt_m) * cphi * slon
+    z = (N * (1 - e2) + alt_m) * sphi
+
+    return np.array([x, y, z], dtype=float)
+
+
+# =========================================================
+# VELOCITY: ENU → ECEF → OpenGL
+# velocity is NOT divided by R_earth (pure direction)
+# =========================================================
+
+def enu_velocity_to_gl(vel_enu, lat_deg, lon_deg):
+    lat = math.radians(lat_deg)
+    lon = math.radians(lon_deg)
+
+    # ENU → ECEF
+    R_enu2ecef = enu_to_ecef_matrix(lat, lon)
+    v_ecef = R_enu2ecef @ vel_enu
+
+    # ECEF → GL
+    v_gl = R_ecef_to_gl @ v_ecef
+    return v_gl
+
+
+# =========================================================
+# DRAWING HELPERS
+# =========================================================
+
+def draw_arrow_at_position(pos_gl, v_gl, scale=1.0):
+    """Draw a simple arrow from pos_gl in direction v_gl."""
+    vx, vy, vz = (v_gl * scale).tolist()
+    px, py, pz = pos_gl.tolist()
+
+    # Line
+    glLineWidth(8.0)
+    glBegin(GL_LINES)
+    glColor3f(1, 1, 0)
+    glVertex3f(px, py, pz)
+    glVertex3f(px + vx, py + vy, pz + vz)
+    glEnd()
+
+    # Tip
+    glPointSize(8.0)
+    glBegin(GL_POINTS)
+    glColor3f(1, 0.3, 0.3)
+    glVertex3f(px + vx, py + vy, pz + vz)
+    glEnd()
+
+
+# =========================================================
+# MAIN ENTRY POINT — CALL THIS FROM paintGL()
+# =========================================================
+
+def draw_gl_velocity_arrow(lat_deg, lon_deg, alt_m,
+                           vel_e, vel_n, vel_u,
+                           scale=1.0):
+    """
+    Draws the rotated velocity vector at the correct satellite
+    position in your OpenGL radius-1 Earth world.
+    """
+
+    # Velocity in ENU (m/s)
+    vel_enu = np.array([-vel_e, vel_n, vel_u], dtype=float)
+
+    # ENU → GL direction
+    v_gl = enu_velocity_to_gl(vel_enu, lat_deg, lon_deg)
+
+    # Position: LLA → ECEF (meters)
+    pos_ecef = lla_to_ecef(lat_deg, lon_deg, alt_m)
+
+    # Scale ECEF to match OpenGL radius=1 Earth
+    pos_ecef_scaled = pos_ecef / R_EARTH
+
+    # Rotate position into your GL frame
+    #pos_gl = R_ecef_to_gl @ pos_ecef_scaled
+    #pos_gl[0] *= -1
+    pos_gl = np.array(latlon_to_app_xyz(lat_deg, lon_deg))
+    print (pos_gl)
+
+
+    # Draw arrow
+    draw_arrow_at_position(pos_gl, v_gl, scale)
+
+
+# =========================================================
+# MAIN ENTRY POINT — CALL THIS FROM paintGL()
+# =========================================================
+
+
+#--------------------------------------------------------------
+# Old Conversions
+#--------------------------------------------------------------
+
 def latlon_to_ecef(lat_deg, lon_deg, alt_m=0.0):
     """
     Convert geodetic coordinates (latitude, longitude, altitude)
@@ -107,6 +256,28 @@ def latlon_to_ecef(lat_deg, lon_deg, alt_m=0.0):
     Z = (N * (1 - e2) + alt_m) * math.sin(lat)
 
     return X, Y, Z
+
+def ned_to_ecef_velocity(v_ned, lat_deg, lon_deg):
+    """
+    Convert a velocity vector from local NED (North-East-Down) frame to ECEF.
+
+    v_ned : iterable of [vn, ve, vd] in m/s
+    lat_deg, lon_deg : location where NED frame is defined
+    Returns np.array([vx, vy, vz]) in ECEF
+    """
+    lat = np.radians(lat_deg)
+    lon = np.radians(lon_deg)
+
+    # NED to ECEF rotation matrix
+    R = np.array([
+        [-np.sin(lat) * np.cos(lon), -np.sin(lon), -np.cos(lat) * np.cos(lon)],
+        [-np.sin(lat) * np.sin(lon),  np.cos(lon), -np.cos(lat) * np.sin(lon)],
+        [ np.cos(lat),                0.0,         -np.sin(lat)]
+    ])
+
+    v_ecef = R.T @ np.array(v_ned, dtype=float)
+    return v_ecef
+
 
 def latlon_to_tile(lat:float, lon:float, zoom:float)->[int,int]:
     '''Returns y,x of tile for a lat lon and zoom level'''
@@ -164,28 +335,46 @@ def orig_latlon_to_app_xyz(lat_deg, lon_deg, alt_m=0.0, R=1.0):
 
     return x, y, z
 
+def wrap_lon_deg(lon):
+    """Wrap longitude to [-180, +180)."""
+    lon = (lon + 180.0) % 360.0 - 180.0
+    return lon
 
-def latlon_to_app_xyz(lat_deg, lon_deg, alt_m=0.0, R=1.0):
-    lat = math.radians(lat_deg)
-    lon = math.radians(lon_deg)
+def latlon_to_app_xyz(lat_deg, lon_deg, alt_m=0.0, R=1.0, origin_lon_deg=0.0, origin_lat_deg=0.0):
+    """
+    Convert lat/lon/alt to app X,Y,Z with radius R.
+    origin_lon_deg, origin_lat_deg define the new central meridian/latitude.
+    - Uses same app mapping as you already have: lon_app = 90 - lon_rel
+    - Handles wrapping and applies origin with the correct sign so moving origin_lon
+      moves the globe in the expected direction.
+    """
 
-    # Shift so lon=0 sits on +Z axis (instead of -X)
-    lon_app = math.radians(-lon_deg + 90)  # <── CHANGE HERE
-    lat_app = math.radians(lat_deg)
+    # compute relative longitude (longitude of point measured from origin)
+    lon_rel = wrap_lon_deg(lon_deg - origin_lon_deg)
+    lat_rel = lat_deg - origin_lat_deg  # usually you only change lon, but included for completeness
+
+    # app convention: lon_app = 90 - lon_rel (preserves your existing behaviour)
+    lon_app = math.radians(90.0 - lon_rel)
+    lat_app = math.radians(lat_rel)
 
     x = R * math.cos(lat_app) * math.cos(lon_app)
     y = R * math.sin(lat_app)
     z = R * math.cos(lat_app) * math.sin(lon_app)
 
-    x *= (1 + alt_m / WGS84_A)
-    y *= (1 + alt_m / WGS84_A)
-    z *= (1 + alt_m / WGS84_A)
-    return x, y, z
+    scale = 1.0 + (alt_m / WGS84_A)
+    return x * scale, y * scale, z * scale
+
 
 # -- end coord utils -- #
+#--------------------------------------------------------------
+# END Old Conversions
+#--------------------------------------------------------------
 
 
-# -- obj loader -- #
+
+#--------------------------------------------------------------
+# Map Entities
+#--------------------------------------------------------------
 @contextmanager
 def gl_state_guard(save_current_color=True,
                    save_point_size=True,
@@ -285,95 +474,44 @@ class SceneObject:
         pass
     def on_click(self):
         print(f"{self.__class__.__name__} clicked")
-
-class SceneModel:
+   
+class SceneModel(SceneObject):
     def __init__(self, lat_deg, lon_deg, alt_m, scale, obj_path):
         self.lat_deg = lat_deg
         self.lon_deg = lon_deg
         self.alt_m = alt_m
         self.scale = scale
-
-        # Convert lat/lon to your app's coordinate frame
-        self.position = np.array(latlon_to_app_xyz(self.lat_deg, self.lon_deg, self.alt_m), dtype=float)
-
-        # Compute the model rotation so it faces the Earth's center
+        self.position = np.array(latlon_to_app_xyz(self.lat_deg, self.lon_deg, self.alt_m))
         self.rotation = self.calc_rotation()
-
-        # Load mesh
         self.mesh = OBJLoader.load(obj_path)
-
+        self.points_syz = self.position
     def calc_rotation(self):
-        """
-        Robust rotation so model +Z (forward) points to Earth's center and +Y is local up.
-        Handles numerical roundoff and pole singularities.
-        Returns [pitch, yaw, roll] in degrees (X, Y, Z).
-        """
-        pos = self.position.astype(float)
-        # forward: toward center
-        forward = -pos
-        fnorm = np.linalg.norm(forward)
-        if fnorm == 0:
-            # at origin (shouldn't happen) — return identity
-            return np.array([0.0, 0.0, 0.0])
-        forward /= fnorm
-
-        # up: local surface normal (pointing outward)
-        up = pos / np.linalg.norm(pos)
-
-        # right = up x forward
-        right = np.cross(up, forward)
-        rnorm = np.linalg.norm(right)
-
-        if rnorm < 1e-8:
-            # Degenerate: up and forward are (anti)parallel (near the poles).
-            # Choose a stable arbitrary right vector. Prefer world X unless it's collinear.
-            cand = np.array([1.0, 0.0, 0.0])
-            if abs(np.dot(cand, forward)) > 0.99:
-                cand = np.array([0.0, 1.0, 0.0])
-            right = np.cross(cand, forward)
-            rnorm = np.linalg.norm(right)
-            if rnorm < 1e-10:
-                # fallback to identity orientation
-                return np.array([0.0, 0.0, 0.0])
-        right /= rnorm
-
-        # recompute a true orthonormal up
-        up = np.cross(forward, right)
-        up /= np.linalg.norm(up)
-
-        # rotation matrix: columns are local axes in world coords
-        R = np.column_stack((right, up, forward))
-
-        # extract Euler angles (X = pitch, Y = yaw, Z = roll)
-        # be numerically safe: clamp values for asin
-        # pitch from R[1,2] with sign convention used earlier
-        sin_pitch = -R[1, 2]
-        sin_pitch = clamp(sin_pitch, -1.0, 1.0)
-        pitch = math.degrees(math.asin(sin_pitch))
-
-        # For yaw and roll we use atan2 on appropriate elements
-        # yaw = atan2(R[0,2], R[2,2])
-        yaw = math.degrees(math.atan2(R[0, 2], R[2, 2]))
-
-        # roll = atan2(R[1,0], R[1,1])
-        roll = math.degrees(math.atan2(R[1, 0], R[1, 1]))
-
-        return np.array([norm_angle(pitch), norm_angle(yaw), norm_angle(roll)])
+        dir_vec = -self.position.astype(float)
+        norm = np.linalg.norm(dir_vec)
+        dir_vec /= norm
+        dx, dy, dz = dir_vec[0], dir_vec[1], -dir_vec[2]
 
 
-    # ------------------------------------------------------------------
+        # yaw: rotation around Y so forward (+Z local) points toward dir_vec
+        yaw = np.degrees(np.atan2(dx, dz))
+
+        # pitch: rotation around local X so forward axis tilts up/down toward dir_vec
+        pitch = np.degrees(np.atan2(dy, np.sqrt(dx*dx + dz*dz)))
+
+        # optional small self-spin about local forward axis (roll) or around model Z:
+        roll = 0.0
+        # assign into your satect rotation (X=pitch, Y=yaw, Z=roll)
+        rotation = np.array([pitch, yaw, roll])
+        return rotation
+
     def draw(self):
         glPushMatrix()
         glTranslatef(*self.position)
-
-        # Apply rotations in correct local order: X → Y → Z
-        glRotatef(self.rotation[2], 0, 0, 1)  # roll
-        glRotatef(self.rotation[1], 0, 1, 0)  # yaw
-        glRotatef(self.rotation[0], 1, 0, 0)  # pitch
-
+        glRotatef(self.rotation[1], 0, 1, 0)
+        glRotatef(self.rotation[0], 1, 0, 0)
+        glRotatef(self.rotation[2], 0, 0, 1)
         glScalef(*self.scale)
 
-        # Draw faces
         glBegin(GL_TRIANGLES)
         for face in self.mesh.faces:
             for vi, ni, matname in face:
@@ -386,6 +524,7 @@ class SceneModel:
         glEnd()
 
         glPopMatrix()
+
 
 
 # ---------------------------------------------------------------------
@@ -417,6 +556,9 @@ class PointSceneObject(SceneObject):
         return [self.xyz]
 
 
+# ---------------------------------------------------------------------
+# Polyline primitive
+# ---------------------------------------------------------------------
 class PolyLineSceneObject(SceneObject):
     def __init__(self, points_wgs84, color=(1.0, 1.0, 0.0), width=4.0):
         """
@@ -464,7 +606,9 @@ class Scene:
         for obj in self.objects:
             obj.draw()
 
-# -- END obj_loader -- #
+
+
+
 
 
 #-------------------------------------------------------
@@ -696,6 +840,16 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
             self._draw_spherical_tile(lat0, lat1, lon0, lon1, tex, alpha=1.0)
 
         self.scene.draw()
+        # Draw a test velocity vector
+        draw_gl_velocity_arrow(
+            lat_deg = 0.0,
+            lon_deg = -30.0,
+            alt_m = 0.0,     # 400 km
+            vel_e = 2500,         # m/s east
+            vel_n = 2500,
+            vel_u = 0,
+            scale = 0.0001         # adjust to your world units
+        )
 
     # ----------------- pending/result handling -----------------
     @Slot(int,int,int,bytes)
@@ -816,6 +970,16 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
         sat = SceneModel(30, -100, 1250_000, np.array([0.1,0.1,0.1]), sat_path)
         self.scene.add(sat)
 
+        if 0:
+            model = SceneModel(lat_deg=30, lon_deg=20, alt_m=500_000,
+                       scale=(0.1,0.1,0.1),
+                       obj_path="assets/satellite/satellite.obj",)
+            #ned_vel = [ 1000, 0, 0 ]
+            #velocity = ned_to_ecef_velocity(ned_vel, 10, 20)
+            #model.set_orientation_from_velocity(velocity)
+
+            self.scene.add(model)
+
     def add_track(self)->None:
         # Add a single point over radar site
         self.scene.add(PointSceneObject(lat_deg=45.0, lon_deg=-93.0, alt_m=0.0,
@@ -911,7 +1075,8 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
 
         glBindTexture(GL_TEXTURE_2D,0)
         glColor4f(1.0,1.0,1.0,1.0)
-        
+
+            
 
     def publish_display_info(self)->None:
         '''Emit debug info'''
