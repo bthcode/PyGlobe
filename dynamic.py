@@ -65,6 +65,10 @@ WGS84_A = 6378137.0        # semi-major axis (m)
 WGS84_F = 1 / 298.257223563
 WGS84_B = WGS84_A * (1 - WGS84_F)
 WGS84_E2 = 1 - (WGS84_B**2 / WGS84_A**2)
+
+#-------------------------------------
+# Math utils
+#-------------------------------------
 def clamp(a,b,c): 
     return max(b, min(c, a))
 
@@ -74,6 +78,9 @@ def norm_angle(a):
     while a <= -180.0: a += 360.0
     while a > 180.0: a -= 360.0
     return a
+#-------------------------------------
+# Math utils
+#-------------------------------------
 
 
 #--------------------------------------------------------------
@@ -112,31 +119,6 @@ R_ecef_to_gl = np.array([
 ])
 
 
-# =========================================================
-# LLA → ECEF POSITION (meters)
-# =========================================================
-
-def lla_to_ecef(lat_deg, lon_deg, alt_m):
-    # WGS-84
-    a  = 6378137.0
-    e2 = 6.69437999014e-3
-
-    lat = np.radians(lat_deg)
-    lon = np.radians(lon_deg)
-
-    sphi = np.sin(lat)
-    cphi = np.cos(lat)
-    slon = np.sin(lon)
-    clon = np.cos(lon)
-
-    N = a / np.sqrt(1 - e2 * sphi * sphi)
-
-    x = (N + alt_m) * cphi * clon
-    y = (N + alt_m) * cphi * slon
-    z = (N * (1 - e2) + alt_m) * sphi
-
-    return np.array([x, y, z], dtype=float)
-
 
 # =========================================================
 # VELOCITY: ENU → ECEF → OpenGL
@@ -155,10 +137,6 @@ def enu_velocity_to_gl(vel_enu, lat_deg, lon_deg):
     v_gl = R_ecef_to_gl @ v_ecef
     return v_gl
 
-
-# =========================================================
-# DRAWING HELPERS
-# =========================================================
 
 def draw_arrow_at_position(pos_gl, v_gl, scale=1.0):
     """Draw a simple arrow from pos_gl in direction v_gl."""
@@ -181,10 +159,6 @@ def draw_arrow_at_position(pos_gl, v_gl, scale=1.0):
     glEnd()
 
 
-# =========================================================
-# MAIN ENTRY POINT — CALL THIS FROM paintGL()
-# =========================================================
-
 def draw_gl_velocity_arrow(lat_deg, lon_deg, alt_m,
                            vel_e, vel_n, vel_u,
                            scale=1.0):
@@ -200,10 +174,10 @@ def draw_gl_velocity_arrow(lat_deg, lon_deg, alt_m,
     v_gl = enu_velocity_to_gl(vel_enu, lat_deg, lon_deg)
 
     # Position: LLA → ECEF (meters)
-    pos_ecef = lla_to_ecef(lat_deg, lon_deg, alt_m)
+    pos_ecef = np.array(latlon_to_ecef(lat_deg, lon_deg, alt_m))
 
     # Scale ECEF to match OpenGL radius=1 Earth
-    pos_ecef_scaled = pos_ecef / R_EARTH
+    pos_ecef_scaled = pos_ecef / WGS84_A
 
     # Rotate position into your GL frame
     #pos_gl = R_ecef_to_gl @ pos_ecef_scaled
@@ -300,41 +274,6 @@ def tile_path(cache_root:str, z:int,x:int,y:int)->str:
     '''Tile index to path where it should be in cache'''
     return os.path.join(cache_root, str(z), str(x), f"{y}.png")
 
-def orig_latlon_to_app_xyz(lat_deg, lon_deg, alt_m=0.0, R=1.0):
-    """
-    Convert WGS84 (lat, lon, alt) to application caresian
-
-    NOTE - longitude is flipped and rotate by 180 degrees
-    """
-    # Convert geodetic → ECEF meters
-    lat = math.radians(lat_deg)
-    lon = math.radians(lon_deg)
-    a = WGS84_A
-    e2 = WGS84_E2
-    N = a / math.sqrt(1 - e2 * math.sin(lat)**2)
-
-    xe = (N + alt_m) * math.cos(lat) * math.cos(lon)
-    ye = (N + alt_m) * math.cos(lat) * math.sin(lon)
-    ze = (N * (1 - e2) + alt_m) * math.sin(lat)
-
-    # Scale Earth radius to match your scene (R corresponds to a=6378137)
-    scale = R / WGS84_A
-
-    # Convert ECEF → app’s coordinate frame:
-    # Equivalent to lon' = -(lon + 180)
-    lon_app = math.radians(-(lon_deg + 180))
-    lat_app = math.radians(lat_deg)
-    x = R * math.cos(lat_app) * math.cos(lon_app)
-    y = R * math.sin(lat_app)
-    z = R * math.cos(lat_app) * math.sin(lon_app)
-
-    # Apply altitude offset (in meters → scaled units)
-    x *= ( 1+ alt_m / WGS84_A)
-    y *= ( 1+ alt_m / WGS84_A)
-    z *= ( 1+ alt_m / WGS84_A)
-
-    return x, y, z
-
 def wrap_lon_deg(lon):
     """Wrap longitude to [-180, +180)."""
     lon = (lon + 180.0) % 360.0 - 180.0
@@ -406,6 +345,7 @@ def gl_state_guard(save_current_color=True,
         if save_current_color and prev_color is not None:
             # prev_color is an array-like of 4 floats
             glColor4fv(prev_color)
+# end gl_state_guard
 
 class Mesh:
     def __init__(self):
@@ -413,11 +353,13 @@ class Mesh:
         self.normals = []
         self.faces = []
         self.materials = {}
+# end class Mesh
 
 class Material:
     def __init__(self, name):
         self.name = name
         self.diffuse = [0.8, 0.8, 0.8]
+# end class Material
 
 class OBJLoader:
     @staticmethod
@@ -468,12 +410,14 @@ class OBJLoader:
                 elif line.startswith("Kd") and current:
                     current.diffuse = list(map(float, line.split()[1:4]))
         return materials
+# end class OBJLoader
 
 class SceneObject:
     def draw(self):
         pass
     def on_click(self):
         print(f"{self.__class__.__name__} clicked")
+# end class ScenObject
    
 class SceneModel(SceneObject):
     def __init__(self, lat_deg, lon_deg, alt_m, scale, obj_path):
@@ -524,6 +468,7 @@ class SceneModel(SceneObject):
         glEnd()
 
         glPopMatrix()
+# end class SceneModel
 
 
 
@@ -554,6 +499,7 @@ class PointSceneObject(SceneObject):
 
     def pick_points(self):
         return [self.xyz]
+# end class PointSceneObject
 
 
 # ---------------------------------------------------------------------
@@ -591,7 +537,7 @@ class PolyLineSceneObject(SceneObject):
         
     def pick_points(self):
         return self.points_xyz
-
+# end class PolyLineSceneObject
 
 
 class Scene:
@@ -606,7 +552,9 @@ class Scene:
         for obj in self.objects:
             obj.draw()
 
-
+#----------------------------------------------------
+# END Map Entities
+#----------------------------------------------------
 
 
 
