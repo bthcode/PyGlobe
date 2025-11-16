@@ -66,6 +66,112 @@ WGS84_F = 1 / 298.257223563
 WGS84_B = WGS84_A * (1 - WGS84_F)
 WGS84_E2 = 1 - (WGS84_B**2 / WGS84_A**2)
 
+#============================================================
+# COORDINATE SYSTEMS
+#============================================================
+# This application uses TWO coordinate systems:
+#
+# 1. OLD SYSTEM (OpenGL/Legacy):
+#    - Used by OpenGL camera rotations (rot_x, rot_y)
+#    - Z-axis points to Prime Meridian
+#    - X-axis points to Bay of Bengal (90°E)
+#    - Y-axis points to North Pole
+#    Functions: latlon_to_xyz_old(), old_to_new_coords()
+#
+# 2. NEW SYSTEM (Standard Geographic/ECEF-like):
+#    - X-axis points to Prime Meridian (0°E)
+#    - Y-axis points to North Pole (90°N)
+#    - Z-axis points to Bay of Bengal (90°E)
+#    - Standard right-handed coordinate system
+#    Functions: latlon_to_xyz_v2(), xyz_to_latlon_v2()
+#
+# ADAPTERS:
+#    - old_to_new_coords(x,y,z) -> (z,y,x)
+#    - new_to_old_coords(x,y,z) -> (z,y,x)
+#    These convert between the two systems via axis permutation
+#============================================================
+
+def old_to_new_coords(x_old, y_old, z_old):
+    """
+    Transform from OLD app coords to NEW standard coords.
+    
+    Analysis from verification:
+    - Old Prime Meridian (0,0,1) should become New Prime Meridian (1,0,0)
+    - Old Bay of Bengal (1,0,0) should become New Bay of Bengal (0,0,1)
+    - Old North Pole (0,1,0) should stay New North Pole (0,1,0)
+    
+    Direct mapping:
+    x_new = z_old  (old Z-axis → new X-axis)
+    y_new = y_old  (old Y-axis → new Y-axis)  
+    z_new = x_old  (old X-axis → new Z-axis)
+    """
+    x_new = z_old
+    y_new = y_old
+    z_new = x_old
+    return x_new, y_new, z_new
+
+
+def new_to_old_coords(x_new, y_new, z_new):
+    """
+    Transform from NEW standard coords to OLD app coords.
+    
+    Inverse mapping:
+    x_old = z_new  (new Z-axis → old X-axis)
+    y_old = y_new  (new Y-axis → old Y-axis)
+    z_old = x_new  (new X-axis → old Z-axis)
+    """
+    x_old = z_new
+    y_old = y_new
+    z_old = x_new
+    return x_old, y_old, z_old
+
+
+# These use standard ECEF-like conventions
+def latlon_to_xyz_v2(lat_deg, lon_deg, alt_m=0.0, R=1.0):
+    """
+    Standard spherical to Cartesian conversion (ECEF-like).
+
+    Conventions:
+    - X-axis points to (0°N, 0°E) - Prime Meridian at Equator
+    - Y-axis points to North Pole (90°N)
+    - Z-axis points to (0°N, 90°E) - Bay of Bengal at Equator
+
+    This is the standard right-handed coordinate system used in
+    geospatial applications, flight simulators, etc.
+    """
+    lat = math.radians(lat_deg)
+    lon = math.radians(lon_deg)
+
+    x = R * math.cos(lat) * math.cos(lon)
+    y = R * math.sin(lat)
+    z = R * math.cos(lat) * math.sin(lon)
+
+    scale = 1.0 + (alt_m / WGS84_A)
+    return x * scale, y * scale, z * scale
+
+
+def xyz_to_latlon_v2(x, y, z):
+    """
+    Inverse of latlon_to_xyz_v2.
+    Convert Cartesian coordinates back to lat/lon.
+    """
+    r = math.sqrt(x*x + y*y + z*z)
+    if r == 0:
+        return 0.0, 0.0
+
+    # Normalize
+    x, y, z = x/r, y/r, z/r
+
+    # Clamp y to avoid numerical errors in asin
+    y = max(-1.0, min(1.0, y))
+
+    lat = math.degrees(math.asin(y))
+    lon = math.degrees(math.atan2(z, x))
+
+    return lat, wrap_lon_deg(lon)
+
+
+
 #-------------------------------------
 # Math utils
 #-------------------------------------
@@ -182,8 +288,7 @@ def draw_gl_velocity_arrow(lat_deg, lon_deg, alt_m,
     # Rotate position into your GL frame
     #pos_gl = R_ecef_to_gl @ pos_ecef_scaled
     #pos_gl[0] *= -1
-    pos_gl = np.array(latlon_to_app_xyz(lat_deg, lon_deg))
-    print (pos_gl)
+    pos_gl = np.array(latlon_to_app_xyz_old(lat_deg, lon_deg))
 
 
     # Draw arrow
@@ -279,7 +384,7 @@ def wrap_lon_deg(lon):
     lon = (lon + 180.0) % 360.0 - 180.0
     return lon
 
-def latlon_to_app_xyz(lat_deg, lon_deg, alt_m=0.0, R=1.0, origin_lon_deg=0.0, origin_lat_deg=0.0):
+def latlon_to_app_xyz_old(lat_deg, lon_deg, alt_m=0.0, R=1.0, origin_lon_deg=0.0, origin_lat_deg=0.0):
     """
     Convert lat/lon/alt to app X,Y,Z with radius R.
     origin_lon_deg, origin_lat_deg define the new central meridian/latitude.
@@ -425,7 +530,7 @@ class SceneModel(SceneObject):
         self.lon_deg = lon_deg
         self.alt_m = alt_m
         self.scale = scale
-        self.position = np.array(latlon_to_app_xyz(self.lat_deg, self.lon_deg, self.alt_m))
+        self.position = np.array(latlon_to_app_xyz_old(self.lat_deg, self.lon_deg, self.alt_m))
         self.rotation = self.calc_rotation()
         self.mesh = OBJLoader.load(obj_path)
         self.points_syz = self.position
@@ -484,7 +589,7 @@ class PointSceneObject(SceneObject):
         self.color = color
         self.size = size
         # Precompute world coordinates
-        self.xyz = np.array(latlon_to_app_xyz(self.lat, self.lon, self.alt, R=1.0))
+        self.xyz = np.array(latlon_to_app_xyz_old(self.lat, self.lon, self.alt, R=1.0))
 
     def draw(self):
         glPushMatrix()
@@ -517,7 +622,7 @@ class PolyLineSceneObject(SceneObject):
 
         # Precompute xyz points in app coordinates
         self.points_xyz = [
-            np.array(latlon_to_app_xyz(lat, lon, alt, R=1.0))
+            np.array(latlon_to_app_xyz_old(lat, lon, alt, R=1.0))
             for lat, lon, alt in self.points_wgs84
         ]
 
@@ -655,6 +760,8 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
         self.info_timer.timeout.connect(self.publish_display_info)
         self.info_timer.start(1000)
 
+      
+
     def shutdownFetcher(self):
         '''Shut Down Tile Fetching Thread'''
         self.sigShutdownFetcher.emit()
@@ -684,48 +791,59 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
                             'lon' : lon,
                             'alt' : alt }
 
-    def get_center_latlon(self) -> [float, float]:
-        """Return the latitude and longitude that the camera is looking at."""
+
+    def get_center_latlon(self):
+        """
+        Return the latitude and longitude that the camera is looking at.
+        Uses NEW v2 coordinate system for calculations.
+        """
         # Convert rotation angles to radians
         rx = math.radians(self.rot_x)
         ry = math.radians(self.rot_y)
 
-        # Compute camera position in world coordinates
+        # Compute camera position in OLD OpenGL coordinate space
+        # (this is still driven by the old rotation system)
         cx = self.distance * math.sin(ry) * math.cos(rx)
         cy = -self.distance * math.sin(rx)
         cz = self.distance * math.cos(ry) * math.cos(rx)
-        camera_pos = np.array([cx, cy, cz], dtype=float)
-        self.camera_pos = camera_pos
+        camera_pos_old = np.array([cx, cy, cz], dtype=float)
 
-        # Save for debugging
-        self.camera_x, self.camera_y, self.camera_z = camera_pos
+        # Convert camera position to NEW coordinate space
+        camera_pos_new = np.array(old_to_new_coords(*camera_pos_old))
 
-        # Direction toward origin
-        camera_dir = -camera_pos / np.linalg.norm(camera_pos)
+        # Store in new coordinate space for display
+        self.camera_pos = camera_pos_new
 
-        # Ray-sphere intersection (R = 1)
+        # Save individual components for debugging
+        self.camera_x, self.camera_y, self.camera_z = camera_pos_new
+
+        # Direction toward origin (in NEW space)
+        camera_dir = -camera_pos_new / np.linalg.norm(camera_pos_new)
+
+        # Ray-sphere intersection (R = 1, in NEW space)
         a = np.dot(camera_dir, camera_dir)
-        b = 2 * np.dot(camera_pos, camera_dir)
-        c = np.dot(camera_pos, camera_pos) - 1
+        b = 2 * np.dot(camera_pos_new, camera_dir)
+        c = np.dot(camera_pos_new, camera_pos_new) - 1
         disc = b*b - 4*a*c
+
         if disc < 0:
             return None
+
         t = (-b - math.sqrt(disc)) / (2*a)
-        point = camera_pos + t * camera_dir
+        point = camera_pos_new + t * camera_dir
 
-        x, y, z = point
+        # Convert intersection point to lat/lon using NEW system
+        lat, lon = xyz_to_latlon_v2(*point)
 
-        # Convert to lat/lon matching latlon_to_app_xyz()
-        lat = -math.degrees(math.asin(y))
-        lon = -math.degrees(math.atan2(x, z)) 
+        # CORRECTION: The old rotation system has inverted lat/lon relationships
+        # (cy = -distance * sin(rx) and the rot_y orientation)
+        # So we need to flip both to match the working behavior
+        lat = -lat
+        lon = -lon
 
-        # Normalize longitude to [-180, 180]
-        if lon < -180:
-            lon += 360
-        if lon > 180:
-            lon -= 360
+        return lat, wrap_lon_deg(lon)
 
-        return lat, lon
+
 
     def load_base_textures(self):
         '''Ensure lowest level of map is always loaded'''
@@ -770,8 +888,8 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
             y = key[2]
             lon0, lon1 = tile2lon(x, z), tile2lon(x+1, z)
             lat0, lat1 = tile2lat(y+1, z), tile2lat(y, z)
-            self._draw_spherical_tile(lat0, lat1, lon0, lon1, tex, alpha=1.0)
-
+            self._draw_spherical_tile_v2(lat0, lat1, lon0, lon1, tex, alpha=1.0)  # <- NEW
+   
         #---------------------------------------------
         # Current Layer, if available
         #---------------------------------------------
@@ -785,19 +903,8 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
                 continue
             lon0, lon1 = tile2lon(x, level_z), tile2lon(x+1, level_z)
             lat0, lat1 = tile2lat(y+1, level_z), tile2lat(y, level_z)
-            self._draw_spherical_tile(lat0, lat1, lon0, lon1, tex, alpha=1.0)
-
+            self._draw_spherical_tile_v2(lat0, lat1, lon0, lon1, tex, alpha=1.0)  # <- NEW
         self.scene.draw()
-        # Draw a test velocity vector
-        draw_gl_velocity_arrow(
-            lat_deg = 0.0,
-            lon_deg = -30.0,
-            alt_m = 0.0,     # 400 km
-            vel_e = 2500,         # m/s east
-            vel_n = 2500,
-            vel_u = 0,
-            scale = 0.0001         # adjust to your world units
-        )
 
     # ----------------- pending/result handling -----------------
     @Slot(int,int,int,bytes)
@@ -942,58 +1049,72 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
         self.scene.add(PolyLineSceneObject(track_points, color=(0, 0, 0), width=8))
 
 
-    
-    # ----------------- drawing helpers -----------------
-    def _draw_spherical_tile(self, lat0:float, lat1:float, lon0:float, lon1:float, texid:np.uint32, alpha:float=1.0)->None:
-        '''Draw a tile on the curved Earth'''
+    # CLAUDE
+    # Step 3: Replace _draw_spherical_tile with this new version
+    # This uses the new v2 coordinate system internally, then adapts back to old OpenGL space
+    def _draw_spherical_tile_v2(self, lat0, lat1, lon0, lon1, texid, alpha=1.0):
+        """
+        Draw a tile on the curved Earth using NEW coordinate system.
+
+        This version:
+        1. Computes vertices using latlon_to_xyz_v2 (new standard coords)
+        2. Transforms them back to old OpenGL space using new_to_old_coords
+        3. Should render IDENTICALLY to the original version
+        """
         glBindTexture(GL_TEXTURE_2D, texid)
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE)
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE)
-        glColor4f(1.0,1.0,1.0,alpha)
+        glColor4f(1.0, 1.0, 1.0, alpha)
 
-        # Create an array that approximates the earth 
-        n_sub = 6  
+        # Create an array that approximates the earth
+        n_sub = 6
         latitudes = np.linspace(lat0, lat1, n_sub+1)
         longitudes = np.linspace(lon0, lon1, n_sub+1)
+
+        self.debug_mode = True
 
         #------------------------------------------
         # Draw the outline of the box for debug
         #------------------------------------------
-        self.debug_mode = True
         if self.debug_mode:
             glDisable(GL_TEXTURE_2D)
-            glColor3f(0.0, 0.0, 0.0)  # red borders
+            glColor3f(0.0, 0.0, 0.0)  # black borders
             glBegin(GL_LINE_LOOP)
             for i in range(n_sub + 1):
                 t = i / n_sub
                 lat_a = lat0 + (lat1 - lat0) * t
                 lon_a = lon0
-                lon_b = lon1
-                # bottom edge
-                glVertex3f(*latlon_to_app_xyz(lat_a, lon_a))
+                # bottom edge - use NEW coords, then adapt
+                v = latlon_to_xyz_v2(lat_a, lon_a)
+                v_old = new_to_old_coords(*v)
+                glVertex3f(*v_old)
             for j in range(n_sub + 1):
                 s = j / n_sub
                 lon_a = lon0 + (lon1 - lon0) * s
                 lat_a = lat1
                 # right edge
-                glVertex3f(*latlon_to_app_xyz(lat_a, lon_a))
+                v = latlon_to_xyz_v2(lat_a, lon_a)
+                v_old = new_to_old_coords(*v)
+                glVertex3f(*v_old)
             for i in range(n_sub, -1, -1):
                 t = i / n_sub
                 lat_a = lat0 + (lat1 - lat0) * t
                 lon_a = lon1
-                lon_b = lon0
                 # top edge
-                glVertex3f(*latlon_to_app_xyz(lat_a, lon_a))
+                v = latlon_to_xyz_v2(lat_a, lon_a)
+                v_old = new_to_old_coords(*v)
+                glVertex3f(*v_old)
             for j in range(n_sub, -1, -1):
                 s = j / n_sub
                 lon_a = lon0 + (lon1 - lon0) * s
                 lat_a = lat0
                 # left edge
-                glVertex3f(*latlon_to_app_xyz(lat_a, lon_a))
+                v = latlon_to_xyz_v2(lat_a, lon_a)
+                v_old = new_to_old_coords(*v)
+                glVertex3f(*v_old)
             glEnd()
             glEnable(GL_TEXTURE_2D)
             glColor3f(1, 1, 1)
-
 
         #------------------------------------------
         # Draw the actual tile
@@ -1009,10 +1130,17 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
                 t11 = ((j+1) / n_sub, 1 - (i+1) / n_sub)
                 t10 = (j / n_sub, 1 - (i+1) / n_sub)
 
-                v00 = latlon_to_app_xyz(la0, lo0)
-                v01 = latlon_to_app_xyz(la0, lo1)
-                v11 = latlon_to_app_xyz(la1, lo1)
-                v10 = latlon_to_app_xyz(la1, lo0)
+                # NEW: Use v2 coordinate system
+                v00_new = latlon_to_xyz_v2(la0, lo0)
+                v01_new = latlon_to_xyz_v2(la0, lo1)
+                v11_new = latlon_to_xyz_v2(la1, lo1)
+                v10_new = latlon_to_xyz_v2(la1, lo0)
+
+                # Transform back to old OpenGL space
+                v00 = new_to_old_coords(*v00_new)
+                v01 = new_to_old_coords(*v01_new)
+                v11 = new_to_old_coords(*v11_new)
+                v10 = new_to_old_coords(*v10_new)
 
                 glBegin(GL_QUADS)
                 glTexCoord2f(*t00); glVertex3f(*v00)
@@ -1021,10 +1149,9 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
                 glTexCoord2f(*t10); glVertex3f(*v10)
                 glEnd()
 
-        glBindTexture(GL_TEXTURE_2D,0)
-        glColor4f(1.0,1.0,1.0,1.0)
+        glBindTexture(GL_TEXTURE_2D, 0)
+        glColor4f(1.0, 1.0, 1.0, 1.0)
 
-            
 
     def publish_display_info(self)->None:
         '''Emit debug info'''
@@ -1133,6 +1260,7 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
             self.updateScene()
             self.update()
         self.last_pos=ev.pos()
+
 
     def wheelEvent(self, ev)->None:
         '''Zoom'''
