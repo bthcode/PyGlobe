@@ -29,7 +29,6 @@ class TileFetcher(QObject):
 
     def __init__(self, cache_dir="cache", parent=None):
         super().__init__(parent)
-        self.nam = QNetworkAccessManager()
         self.cache_dir = cache_dir
         os.makedirs(self.cache_dir, exist_ok=True)
         self.pending = []
@@ -37,13 +36,20 @@ class TileFetcher(QObject):
         self.requested = set()
         self.aimpoint = (0, 0, 0)
 
-        self.timer = QTimer(self)
-        self.timer.timeout.connect(self._dispatch_next)
-        self.timer.start(50)  # regulate requests
+        self.timer = None
+        self.nam = None
 
         self.user_agent = b"Mozilla/5.0 (TileFetcher PyQt Example)"
 
     # ------------------------ slots (thread-safe) ------------------------
+
+    @Slot()
+    def start(self)->None:
+        print ("----------> START <--------------")
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self._dispatch_next)
+        self.timer.start(50)  # regulate requests
+        self.nam = QNetworkAccessManager()
 
     @Slot()
     def shutdown(self)->None:
@@ -182,14 +188,24 @@ class TileViewer(QWidget):
 # Main setup
 # ---------------------------------------------------------------------------
 
+class Signaller(QObject):
+    start = Signal()
+    stop = Signal()
+
 def main():
     app = QApplication([])
+    signaller = Signaller()
 
     # Create fetcher + thread
     fetcher_thread = QThread()
     fetcher = TileFetcher()
+    signaller.start.connect(fetcher.start)
+    signaller.stop.connect(fetcher.shutdown)
     fetcher.moveToThread(fetcher_thread)
     fetcher_thread.start()
+
+    signaller.start.emit()
+
 
     # Create GUI
     viewer = TileViewer()
@@ -201,6 +217,8 @@ def main():
     viewer.setAimpoint.connect(fetcher.setAimpoint)
     viewer.resetFetcher.connect(fetcher.reset)
     fetcher.tileReady.connect(viewer.onTileReady)
+
+    signaller.stop.emit()
 
     app.aboutToQuit.connect(fetcher_thread.quit)
     app.aboutToQuit.connect(fetcher_thread.wait)
