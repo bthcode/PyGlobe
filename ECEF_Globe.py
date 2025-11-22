@@ -1,113 +1,44 @@
 import sys
 import os
 import numpy as np
-import threading
-import time
-from collections import OrderedDict
 from PySide6.QtWidgets import QApplication, QMainWindow, QWidget
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
-from PySide6.QtCore import Qt, QTimer, Signal, QThread, Slot
+from PySide6.QtCore import Qt, QTimer, QThread, Signal, Slot
 from PySide6.QtGui import QImage
 from OpenGL.GL import *
 from OpenGL.GLU import *
 
-# this project packages 
+# Assume tile_fetcher.py is in the same directory
 from tile_fetcher import TileFetcher
 
-MIN_Z = 2
-MAX_Z = 9    # set to highest zoom level you have in cache
-DOWNLOAD_TIMEOUT = 10
-TILE_URL = "https://tile.openstreetmap.org/{z}/{x}/{y}.png"  # common XYZ server (y top origin)
-CACHE_ROOT= "./cache"
-USER_AGENT = "PyGlobe Example/1.0 (your_email@example.com)"  # set a sensible UA
-TILE_SIZE = 512
-MIN_Z = 2
-MAX_Z = 9    # set to highest zoom level you have in cache
-MAX_GPU_TEXTURES = 512
-
 class GlobeWidget(QOpenGLWidget):
-    infoSig = Signal(dict)
+    # Signals for TileFetcher
     requestTile = Signal(int, int, int, str)
     setAimpoint = Signal(int, int, int)
-    resetFetcher = Signal()
-    sigShutdownFetcher = Signal()
-    sigStartFetcher = Signal()
-
+    
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.debug = False
         self.camera_distance = 15000000  # 15,000 km from center
         self.camera_lon = 0.0  # degrees
         self.camera_lat = 0.0  # degrees
         self.last_pos = None
         
+        # Animation
+        self.rotation_speed = 0.5  # degrees per frame
+        self.auto_rotate = False  # Disabled for precise viewing
+        
         # Earth radius in meters
         self.earth_radius = 6371000
         
         # Tile textures
-        #self.tile_textures = {}
-        #self.tile_cache_path = "cache/3"
-
-        # Handles to opengl textures
-        self.textures = OrderedDict() 
-        # Handles to opengl texture (kept separate so they won't be deleted)
-        self.base_textures = OrderedDict() 
-
-
-        #-------------------------------------------------
-        # Life cycle of a tile:
-        #-------------------------------------------------
-        #  1. gets added into screen_tiles
-        #  2. add to inflight and req_q
-        #  3. Diskloader puts img data into res_q
-        #  4. Img data put into pending
-        #  5. Pending converted to textures
-        #  6. When textures overflow, they are removed
-        #-------------------------------------------------
-        # Tiles that have been requested but not received
-        self.inflight = {}
-        # Tiles currently on screen (estimated)
-        self.screen_tiles = {} 
-        # Holds img data that is not yet a texture
-        self.pending = {}
-        # Pending serviced by a timer, so needs a lock
-        self.pending_lock = threading.Lock()
-        # Handles to opengl textures
-        self.textures = OrderedDict() 
-        # Handles to opengl texture (kept separate so they won't be deleted)
-        self.base_textures = OrderedDict() 
-
-        #-------------------------------------------------
-        # Fetcher Design
-        #-------------------------------------------------
-        # - Fetcher in a thread
-        # - Gui Moves, 
-        #    - sets setAimpoint -> cached in fetcher
-        #    - emits tile requests 
-        # - Fetcher sorts tile requests by distance from aimpoint
-        # - when it loads a tile, it emits tileReady
-        #------------------------------------------------
-
-        # background loader queues
-        self.fetcher = TileFetcher(cache_dir=CACHE_ROOT)
-        self.sigShutdownFetcher.connect(self.fetcher.shutdown)
-        self.sigStartFetcher.connect(self.fetcher.start)
-        self.fetcher_thread = QThread()
-        self.fetcher.moveToThread(self.fetcher_thread)
-        self.fetcher_thread.start()
-
-        # Fetcher Control
-        self.requestTile.connect(self.fetcher.requestTile)
-        self.setAimpoint.connect(self.fetcher.setAimpoint)
-        self.resetFetcher.connect(self.fetcher.reset)
-        self.fetcher.tileReady.connect(self.onTileReady)
-        self.sigStartFetcher.emit()
-
-        #----------------------------
-        # Load base layer
-        #----------------------------
-        self.load_base_textures()
-
+        self.tile_textures = {}
+        self.tile_cache_path = "cache"
+        self.pending_tile_data = {}  # Tiles waiting to be uploaded to GPU
+        self.inflight_tiles = set()  # Tiles currently being fetched
+        self.screen_tiles = set()  # Tiles that should be visible
+        
+        # OSM tile URL template
+        self.tile_url_template = "https://tile.openstreetmap.org/{z}/{x}/{y}.png"
         
         # Satellite mesh
         self.satellite_mesh = None
@@ -124,18 +55,15 @@ class GlobeWidget(QOpenGLWidget):
         # Debug ray casting
         self.debug_ray_origin = None
         self.debug_ray_end = None
-
-    def shutdownFetcher(self):
-        '''Shut Down Tile Fetching Thread'''
-        self.sigShutdownFetcher.emit()
-        time.sleep(1)
-        self.fetcher_thread.quit()
-        self.fetcher_thread.wait()
-
-    def closeEvent(self, ev)->None:
-        event.accept()
-        super().closeEvent(ev)
-
+        
+        # Tile update throttling
+        self.last_tile_request_time = 0
+        self.tile_request_cooldown = 200  # ms between tile requests
+        
+        # Timer for animation
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self.animate)
+        self.timer.start(16)  # ~60 FPS
         
     def initializeGL(self):
         glEnable(GL_DEPTH_TEST)
@@ -153,11 +81,11 @@ class GlobeWidget(QOpenGLWidget):
         
         glClearColor(0.0, 0.0, 0.1, 1.0)
         
-        # Load OSM tiles
-        self.load_tiles()
-        
         # Load satellite mesh
         self.load_satellite_mesh()
+        
+        # Request initial tiles
+        self.request_visible_tiles()
         
     def resizeGL(self, w, h):
         glViewport(0, 0, w, h)
@@ -169,6 +97,9 @@ class GlobeWidget(QOpenGLWidget):
     def paintGL(self):
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
         glLoadIdentity()
+        
+        # Upload any pending tile data to GPU
+        self.upload_pending_tiles()
         
         # Calculate camera position in ECEF (camera_distance is from center)
         cam_x, cam_y, cam_z = self.spherical_to_ecef(
@@ -184,32 +115,28 @@ class GlobeWidget(QOpenGLWidget):
         self.draw_earth()
         
         # Draw coordinate axes
-        if self.debug:
-            self.draw_axes()
+        self.draw_axes()
         
-            # Debug: Draw ENU frame at a test location
-            self.draw_coordinate_frame(42.0, -71.0, 2000000)  # Boston area, 2000km altitude
+        # Debug: Draw ENU frame at a test location
+        self.draw_coordinate_frame(42.0, -71.0, 2000000)  # Boston area, 2000km altitude
         
         # Draw satellite with orientation in local ENU
         # Orientation: (roll, pitch, yaw) in degrees in local ENU frame
         self.draw_satellite(self.satellite_lat, self.satellite_lon, self.satellite_alt, 
                           roll=self.satellite_roll, pitch=self.satellite_pitch, yaw=self.satellite_yaw)
         
-        if self.debug:
-            # Draw debug ray if available
-            if self.debug_ray_origin is not None and self.debug_ray_end is not None:
-                self.draw_debug_ray()
+        # Draw debug ray if available
+        if self.debug_ray_origin is not None and self.debug_ray_end is not None:
+            self.draw_debug_ray()
         
     def draw_earth(self):
         glPushMatrix()
         glColor3f(1.0, 1.0, 1.0)  # White to show texture colors
         
-        # Draw tiles
-        # At zoom level 3, we have 8x8 tiles
-        for x in range(8):
-            for y in range(8):
-                if (x, y) in self.textures:
-                    self.draw_tile(x, y)
+        # Draw all loaded tiles
+        for (z, x, y), texture_id in self.tile_textures.items():
+            self.draw_tile(z, x, y)
+        
         glPopMatrix()
         
     def draw_axes(self):
@@ -236,151 +163,112 @@ class GlobeWidget(QOpenGLWidget):
         glEnd()
         
         glEnable(GL_LIGHTING)
-
-    def load_base_textures(self):
-        '''Ensure lowest level of map is always loaded'''
-        # Always draw level3
-        base_z = 3
-        n = 2**base_z
-        xs = np.arange(n)
-        ys = np.arange(n)
-        for x in xs:
-            for y in ys:
-                key = (base_z,x,y)
-                self.request_tile(key)
-
-    def request_tile(self,key: [int,int,int])->None:
-        '''If a tile is not already loaded, emit a request
-        Params
-        ------
-        key: (z,x,y)
-        '''
-        if key in self.inflight: 
-            return
-        if key in self.textures:
-            return
-        if key in self.base_textures:
-            return
-        if key in self.pending:
-            return
-        z,x,y = key
-        if z<MIN_Z or z>MAX_Z: 
-            return
-        self.inflight[key] = True
-        self.requestTile.emit(z,x,y,TILE_URL)
-
-    def get_tile_texture(self, key: [int,int,int]) -> np.uint32:
-        '''Retrieve a texture
-        Params
-        ------
-        key : (z, x, y)
-
-        Returns
-        -------
-        tex_id : np.uint32 : OpenGL texture ID
-        '''
-
-        # - Level 3 is in base_textures
-        # - All others in textures
-        if key[0] == 3:
-            return self.base_textures.get(key)
-        else:
-            return self.textures.get(key)
-
-    @Slot(int,int,int,bytes)
-    def onTileReady(self, z: int, x:int, y:int, data:bytes) ->None:
-        '''Event handler from TileFetcher::tileReady : transfer to pending queue'''
-        key = (z,x,y)
-        del self.inflight[key]
-        with self.pending_lock:
-            self.pending[key] = data
-        self.update()
-
-    def _upload_pending_textures(self)->None:
-        '''Transfer from pending to OpenGL texture, pruning old textures '''
-        with self.pending_lock:
-            items = list(self.pending.items())
-            self.pending.clear()
-        for key, arr in items:
-            if arr is None:
-                continue
-
-            try:
-                pil = Image.open(BytesIO(arr)).convert("RGB")
-                np_img = np.asarray(pil, dtype=np.uint8)
-            except Exception as e:
-                print("failed to open tile", z, x, y, e)
-                return
-
-            # make sure it's contiguous 3-channel
-            if np_img.ndim == 3 and np_img.shape[2] > 3:
-                np_img = np_img[:, :, :3]
-            arr = np.ascontiguousarray(np_img, dtype=np.uint8)
-            h, w = arr.shape[0], arr.shape[1]
-
-            arr = np.ascontiguousarray(arr, dtype=np.uint8)
-            h,w = arr.shape[0], arr.shape[1]
-            texid = glGenTextures(1)
-            glBindTexture(GL_TEXTURE_2D, texid)
-            glPixelStorei(GL_UNPACK_ALIGNMENT,1)
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR)
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE)
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE)
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, w,h,0,GL_RGB,GL_UNSIGNED_BYTE, arr)
-            glGenerateMipmap(GL_TEXTURE_2D)
-            glBindTexture(GL_TEXTURE_2D,0)
-            # replace previous texture
-            if key in self.textures:
-                old = self.textures.pop(key)
-                try: 
-                    glDeleteTextures([old])
-                except: 
-                    pass
-            if key in self.base_textures:
-                old = self.base_textures.pop(key)
-                try: 
-                    glDeleteTextures([old])
-                except: 
-                    pass
-
-            # Protected base layer
-            if key[0] == 3:
-                self.base_textures[key] = texid
-            # Dynamic zoom layers
-            else:
-                self.textures[key] = texid
-            # pruning
-            while len(self.textures) > self.max_gpu_textures:
-                oldk, oldtex = self.textures.popitem(last=False)
-                try: 
-                    glDeleteTextures([oldtex])
-                except: 
-                    pass
-
-
-
     
-    ##def load_tiles(self):
-    ##    """Load OSM tiles from cache"""
-    ##    if not os.path.exists(self.tile_cache_path):
-    ##        print(f"Warning: Tile cache path '{self.tile_cache_path}' not found")
-    ##        return
-    ##    
-    ##    # Level 3 has 8x8 tiles
-    ##    for x in range(8):
-    ##        x_path = os.path.join(self.tile_cache_path, str(x))
-    ##        if not os.path.exists(x_path):
-    ##            continue
-    ##            
-    ##        for y in range(8):
-    ##            tile_path = os.path.join(x_path, f"{y}.png")
-    ##            if os.path.exists(tile_path):
-    ##                texture_id = self.load_texture(tile_path)
-    ##                if texture_id:
-    ##                    self.tile_textures[(x, y)] = texture_id
-    ##    
-    ##    print(f"Loaded {len(self.tile_textures)} tiles")
+    def calculate_zoom_level(self):
+        """Calculate appropriate zoom level based on camera distance"""
+        altitude = self.camera_distance - self.earth_radius
+        altitude_mm = altitude / 1e6
+        
+        if altitude_mm > 10:
+            return 3
+        elif altitude_mm > 5:
+            return 4
+        elif altitude_mm > 2:
+            return 5
+        elif altitude_mm > 1:
+            return 6
+        elif altitude_mm > 0.5:
+            return 7
+        else:
+            return 8
+    
+    def latlon_to_tile(self, lat, lon, zoom):
+        """Convert lat/lon to tile coordinates"""
+        n = 2 ** zoom
+        x = int((lon + 180.0) / 360.0 * n)
+        lat_rad = np.radians(lat)
+        y = int((1.0 - np.arcsinh(np.tan(lat_rad)) / np.pi) / 2.0 * n)
+        x = x % n
+        y = np.clip(y, 0, n - 1)
+        return x, y
+    
+    def request_visible_tiles(self):
+        """Request tiles that should be visible"""
+        zoom = self.calculate_zoom_level()
+        lat, lon = self.camera_lat, self.camera_lon
+        center_x, center_y = self.latlon_to_tile(lat, lon, zoom)
+        
+        # Set aimpoint for prioritization
+        self.setAimpoint.emit(zoom, center_x, center_y)
+        
+        n = 2 ** zoom
+        
+        # Calculate tile radius based on latitude
+        abs_lat = abs(lat)
+        if abs_lat > 70:
+            x_radius, y_radius = 2, 3
+        elif abs_lat > 60:
+            x_radius, y_radius = 3, 4
+        elif abs_lat > 45:
+            x_radius, y_radius = 4, 5
+        else:
+            x_radius, y_radius = 5, 6
+        
+        # Build set of tiles that should be visible
+        new_screen_tiles = set()
+        for dx in range(-x_radius, x_radius + 1):
+            for dy in range(-y_radius, y_radius + 1):
+                x = (center_x + dx) % n
+                y = center_y + dy
+                if 0 <= y < n:
+                    tile_key = (zoom, x, y)
+                    new_screen_tiles.add(tile_key)
+                    
+                    # Request if not already loaded or in flight
+                    if tile_key not in self.tile_textures and tile_key not in self.inflight_tiles:
+                        self.inflight_tiles.add(tile_key)
+                        self.requestTile.emit(zoom, x, y, self.tile_url_template)
+        
+        self.screen_tiles = new_screen_tiles
+    
+    @Slot(int, int, int, bytes)
+    def on_tile_ready(self, z, x, y, data):
+        """Called when TileFetcher has tile data ready"""
+        tile_key = (z, x, y)
+        
+        # Remove from inflight
+        self.inflight_tiles.discard(tile_key)
+        
+        # Store data to be uploaded to GPU in next paintGL call
+        self.pending_tile_data[tile_key] = data
+        self.update()
+    
+    def upload_pending_tiles(self):
+        """Upload pending tile data to GPU"""
+        for (z, x, y), data in list(self.pending_tile_data.items()):
+            # Convert bytes to QImage
+            image = QImage()
+            if image.loadFromData(data):
+                image = image.convertToFormat(QImage.Format_RGBA8888)
+                image = image.mirrored()
+                
+                # Create OpenGL texture
+                texture_id = glGenTextures(1)
+                glBindTexture(GL_TEXTURE_2D, texture_id)
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR)
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE)
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE)
+                glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, image.width(), image.height(),
+                           0, GL_RGBA, GL_UNSIGNED_BYTE, image.bits())
+                
+                self.tile_textures[(z, x, y)] = texture_id
+            
+            del self.pending_tile_data[(z, x, y)]
+    
+    def load_tiles(self):
+        """Legacy - no longer used"""
+        pass
     
     def load_texture(self, filepath):
         """Load a PNG texture"""
@@ -404,25 +292,22 @@ class GlobeWidget(QOpenGLWidget):
         
         return texture_id
     
-    def draw_tile(self, x, y):
+    def draw_tile(self, z, x, y):
         """Draw a single tile on the sphere"""
-        texture_id = self.tile_textures.get((x, y))
+        texture_id = self.tile_textures.get((z, x, y))
         if not texture_id:
             return
         
         glBindTexture(GL_TEXTURE_2D, texture_id)
         
-        # Calculate tile bounds in spherical coordinates
-        # OSM tiles use Web Mercator, but we'll approximate with lat/lon
-        n = 2 ** 3  # zoom level 3
+        # Calculate tile bounds
+        n = 2 ** z
         
-        # Longitude is linear
         lon_min = (x / n) * 360.0 - 180.0
         lon_max = ((x + 1) / n) * 360.0 - 180.0
         
-        # Latitude needs inverse Web Mercator calculation
-        lat_max = self.tile_y_to_lat(y, 3)
-        lat_min = self.tile_y_to_lat(y + 1, 3)
+        lat_max = self.tile_y_to_lat(y, z)
+        lat_min = self.tile_y_to_lat(y + 1, z)
         
         # Draw tile as a quad mesh on the sphere
         steps = 10  # subdivisions for better sphere approximation
@@ -718,17 +603,29 @@ class GlobeWidget(QOpenGLWidget):
         
         return x, y, z
         
+    def animate(self):
+        if self.auto_rotate:
+            self.camera_lon += self.rotation_speed
+            if self.camera_lon >= 360:
+                self.camera_lon -= 360
+            self.update_tiles()
+            self.update()
+            
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
             # Force a render to ensure matrices are current
             self.makeCurrent()
-            # Start dragging camera
-            self.last_pos = event.pos()
             
-        elif event.button() == Qt.RightButton:
             # Check if satellite was clicked
-            if self.check_satellite_click(event.pos().x(), event.pos().y()):
+            if 0 and self.check_satellite_click(event.pos().x(), event.pos().y()):
                 print(f"✓✓✓ SATELLITE CLICKED! ✓✓✓")
+            else:
+                # Start dragging camera
+                self.last_pos = event.pos()
+                self.auto_rotate = False
+        else:
+            self.last_pos = event.pos()
+            self.auto_rotate = False
             
     def mouseMoveEvent(self, event):
         if self.last_pos is None:
@@ -739,23 +636,34 @@ class GlobeWidget(QOpenGLWidget):
         dy = event.pos().y() - self.last_pos.y()
         
         if event.buttons() & Qt.LeftButton:
+            # Reversed for more natural movement
             self.camera_lon -= dx * 0.5
             self.camera_lat = np.clip(self.camera_lat + dy * 0.5, -89, 89)
+            # Don't request tiles on every mouse move - too frequent
             self.update()
             
         self.last_pos = event.pos()
+    
+    def mouseReleaseEvent(self, event):
+        """Request tiles when mouse is released after dragging"""
+        if event.button() == Qt.LeftButton:
+            self.request_visible_tiles()
         
     def wheelEvent(self, event):
         delta = event.angleDelta().y()
-        if delta == 0:  
+        
+        if delta == 0:
             return
+        
         zoom_factor = 0.9 if delta > 0 else 1.1
+        
         self.camera_distance *= zoom_factor
         self.camera_distance = np.clip(
             self.camera_distance, 
-            self.earth_radius * 1.1, 
+            self.earth_radius * 1.5, 
             self.earth_radius * 10
         )
+        self.request_visible_tiles()
         self.update()
         
     def keyPressEvent(self, event):
@@ -803,11 +711,8 @@ class GlobeWidget(QOpenGLWidget):
         height = viewport[3]
         
         # Convert to NDC
-        #ndc_x = (2.0 * mouse_x) / width - 1.0
-        #ndc_y = 1.0 - (2.0 * mouse_y) / height
-        # Convert to NDC using PHYSICAL coordinates
-        ndc_x = (2.0 * mx) / width - 1.0
-        ndc_y = 1.0 - (2.0 * my) / height
+        ndc_x = (2.0 * mouse_x) / width - 1.0
+        ndc_y = 1.0 - (2.0 * mouse_y) / height
         
         print(f"\n2. NORMALIZED DEVICE COORDS")
         print(f"   Viewport: {width} x {height}")
@@ -957,6 +862,8 @@ class GlobeWidget(QOpenGLWidget):
         glEnable(GL_TEXTURE_2D)
 
 class MainWindow(QMainWindow):
+    startFetcher = Signal()
+    
     def __init__(self):
         super().__init__()
         self.setWindowTitle("PySide6 OpenGL 3D Globe (ECEF)")
@@ -965,6 +872,21 @@ class MainWindow(QMainWindow):
         self.globe = GlobeWidget(self)
         self.setCentralWidget(self.globe)
         
+        # Set up TileFetcher in separate thread
+        self.fetcher_thread = QThread()
+        self.fetcher = TileFetcher(cache_dir="cache")
+        self.fetcher.moveToThread(self.fetcher_thread)
+        
+        # Connect signals
+        self.startFetcher.connect(self.fetcher.start)
+        self.globe.requestTile.connect(self.fetcher.requestTile)
+        self.globe.setAimpoint.connect(self.fetcher.setAimpoint)
+        self.fetcher.tileReady.connect(self.globe.on_tile_ready)
+        
+        # Start fetcher thread
+        self.fetcher_thread.start()
+        self.startFetcher.emit()
+        
         self.statusBar().showMessage(
             "Drag to rotate | Scroll to zoom | Space to pause | R to reset"
         )
@@ -972,6 +894,11 @@ class MainWindow(QMainWindow):
 if __name__ == '__main__':
     app = QApplication(sys.argv)
     window = MainWindow()
-    app.aboutToQuit.connect(window.globe.shutdownFetcher)
+    
+    # Cleanup on exit
+    app.aboutToQuit.connect(window.fetcher.shutdown)
+    app.aboutToQuit.connect(window.fetcher_thread.quit)
+    app.aboutToQuit.connect(window.fetcher_thread.wait)
+    
     window.show()
     sys.exit(app.exec())
