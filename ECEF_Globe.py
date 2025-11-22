@@ -22,16 +22,12 @@ class GlobeWidget(QOpenGLWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setMinimumSize(900,600)
-        self.camera_distance = 15000000  # 15,000 km from center
+        self.camera_distance = 20000000  # 15,000 km from center
         self.camera_lon = 0.0  # degrees
         self.camera_lat = 0.0  # degrees
         self.last_pos = None
         self.debug = False
         self.max_gpu_textures = 1024
-        
-        # Animation
-        self.rotation_speed = 0.5  # degrees per frame
-        self.auto_rotate = False  # Disabled for precise viewing
         
         # Earth radius in meters
         self.earth_radius = 6371000
@@ -641,7 +637,7 @@ class GlobeWidget(QOpenGLWidget):
         R_total = R_enu_to_ecef @ R_enu
         
         # Scale the mesh (OBJ files are often in arbitrary units)
-        scale = 50000  # Scale to ~50km size
+        scale = 200000  # Scale to ~50km size
         
         # Convert to OpenGL 4x4 matrix (column-major)
         gl_matrix = np.eye(4)
