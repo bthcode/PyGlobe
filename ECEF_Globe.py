@@ -723,12 +723,14 @@ class GlobeWidget(QOpenGLWidget):
             
         dx = event.pos().x() - self.last_pos.x()
         dy = event.pos().y() - self.last_pos.y()
+
+        dx = dx *3/self.zoom_level
+        dy = dy *3/self.zoom_level
         
         if event.buttons() & Qt.LeftButton:
             # Reversed for more natural movement
             self.camera_lon -= dx * 0.5
             self.camera_lat = np.clip(self.camera_lat + dy * 0.5, -89, 89)
-            # Don't request tiles on every mouse move - too frequent
             self.update()
             
         self.last_pos = event.pos()
