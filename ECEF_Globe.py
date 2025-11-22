@@ -12,6 +12,64 @@ from OpenGL.GLU import *
 # Assume tile_fetcher.py is in the same directory
 from tile_fetcher import TileFetcher
 
+def spherical_to_ecef(lat, lon, r):
+    """Convert spherical coordinates to ECEF
+    r is distance from Earth center (for camera positioning)"""
+    lat_rad = np.radians(lat)
+    lon_rad = np.radians(lon)
+    
+    x = r * np.cos(lat_rad) * np.cos(lon_rad)
+    y = r * np.cos(lat_rad) * np.sin(lon_rad)
+    z = r * np.sin(lat_rad)
+    
+    return x, y, z
+
+def lla_to_ecef(lat, lon, alt):
+    """Convert latitude, longitude, altitude to ECEF coordinates
+    alt is height above Earth surface (not distance from center)"""
+
+    earth_radius = 6371000
+    lat_rad = np.radians(lat)
+    lon_rad = np.radians(lon)
+    
+    # Total distance from Earth center = radius + altitude
+    r = earth_radius + alt
+    
+    x = r * np.cos(lat_rad) * np.cos(lon_rad)
+    y = r * np.cos(lat_rad) * np.sin(lon_rad)
+    z = r * np.sin(lat_rad)
+    
+    return x, y, z
+
+def get_enu_to_ecef_matrix(lat, lon):
+    """Get rotation matrix from local ENU to ECEF frame"""
+    lat_rad = np.radians(lat)
+    lon_rad = np.radians(lon)
+    
+    # ENU basis vectors in ECEF
+    east = np.array([
+        -np.sin(lon_rad),
+        np.cos(lon_rad),
+        0
+    ])
+    
+    north = np.array([
+        -np.sin(lat_rad) * np.cos(lon_rad),
+        -np.sin(lat_rad) * np.sin(lon_rad),
+        np.cos(lat_rad)
+    ])
+    
+    up = np.array([
+        np.cos(lat_rad) * np.cos(lon_rad),
+        np.cos(lat_rad) * np.sin(lon_rad),
+        np.sin(lat_rad)
+    ])
+    
+    # Rotation matrix: columns are ENU basis vectors in ECEF
+    R = np.column_stack([east, north, up])
+    return R
+
+
 class GlobeWidget(QOpenGLWidget):
     # Signals for TileFetcher
     requestTile = Signal(int, int, int, str)
@@ -21,7 +79,7 @@ class GlobeWidget(QOpenGLWidget):
     
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setMinimumSize(900,600)
+        self.setMinimumSize(1000,600)
         self.camera_distance = 20000000  # 15,000 km from center
         self.camera_lon = 0.0  # degrees
         self.camera_lat = 0.0  # degrees
@@ -105,6 +163,8 @@ class GlobeWidget(QOpenGLWidget):
         glLoadIdentity()
         gluPerspective(45, w / h if h > 0 else 1, 100000, 50000000)
         glMatrixMode(GL_MODELVIEW)
+        self.width = w
+        self.height = h
         
     def paintGL(self):
         self.makeCurrent()
@@ -120,7 +180,7 @@ class GlobeWidget(QOpenGLWidget):
         glLoadIdentity()
         
         # Calculate camera position in ECEF (camera_distance is from center)
-        cam_x, cam_y, cam_z = self.spherical_to_ecef(
+        cam_x, cam_y, cam_z = spherical_to_ecef(
             self.camera_lat, self.camera_lon, self.camera_distance
         )
         
@@ -165,32 +225,6 @@ class GlobeWidget(QOpenGLWidget):
         
         glPopMatrix()
         
-    def draw_axes(self):
-        glDisable(GL_LIGHTING)
-        glLineWidth(2.0)
-        
-        axis_length = self.earth_radius * 1.5
-        
-        glBegin(GL_LINES)
-        # X-axis (red)
-        glColor3f(1, 0, 0)
-        glVertex3f(0, 0, 0)
-        glVertex3f(axis_length, 0, 0)
-        
-        # Y-axis (green)
-        glColor3f(0, 1, 0)
-        glVertex3f(0, 0, 0)
-        glVertex3f(0, axis_length, 0)
-        
-        # Z-axis (blue)
-        glColor3f(0, 0, 1)
-        glVertex3f(0, 0, 0)
-        glVertex3f(0, 0, axis_length)
-        glEnd()
-        
-        glEnable(GL_LIGHTING)
-
-
     
     def calculate_zoom_level(self):
         """Calculate appropriate zoom level based on camera distance"""
@@ -423,7 +457,7 @@ class GlobeWidget(QOpenGLWidget):
                 ]
                 
                 for lat, lon, s, t in vertices:
-                    px, py, pz = self.lla_to_ecef(lat, lon, 0)  # Tiles on surface (alt=0)
+                    px, py, pz = lla_to_ecef(lat, lon, 0)  # Tiles on surface (alt=0)
                     # Normal points outward from sphere center
                     nx, ny, nz = px / self.earth_radius, py / self.earth_radius, pz / self.earth_radius
                     glTexCoord2f(s, t)
@@ -437,11 +471,38 @@ class GlobeWidget(QOpenGLWidget):
         n = 2 ** zoom
         lat_rad = np.arctan(np.sinh(np.pi * (1 - 2 * y / n)))
         return np.degrees(lat_rad)
-    
+
+
+    #------------------ DEBUG FUNCTIONS ------------------#
+    def draw_axes(self):
+        glDisable(GL_LIGHTING)
+        glLineWidth(2.0)
+        
+        axis_length = self.earth_radius * 1.5
+        
+        glBegin(GL_LINES)
+        # X-axis (red)
+        glColor3f(1, 0, 0)
+        glVertex3f(0, 0, 0)
+        glVertex3f(axis_length, 0, 0)
+        
+        # Y-axis (green)
+        glColor3f(0, 1, 0)
+        glVertex3f(0, 0, 0)
+        glVertex3f(0, axis_length, 0)
+        
+        # Z-axis (blue)
+        glColor3f(0, 0, 1)
+        glVertex3f(0, 0, 0)
+        glVertex3f(0, 0, axis_length)
+        glEnd()
+        
+        glEnable(GL_LIGHTING)
+
     def draw_coordinate_frame(self, lat, lon, alt):
         """Draw ENU (East-North-Up) coordinate frame at specified location"""
         # Get ECEF position
-        px, py, pz = self.lla_to_ecef(lat, lon, alt)
+        px, py, pz = lla_to_ecef(lat, lon, alt)
         
         # Calculate ENU basis vectors
         lat_rad = np.radians(lat)
@@ -517,33 +578,6 @@ class GlobeWidget(QOpenGLWidget):
         glEnable(GL_LIGHTING)
         glEnable(GL_TEXTURE_2D)
     
-    def get_enu_to_ecef_matrix(self, lat, lon):
-        """Get rotation matrix from local ENU to ECEF frame"""
-        lat_rad = np.radians(lat)
-        lon_rad = np.radians(lon)
-        
-        # ENU basis vectors in ECEF
-        east = np.array([
-            -np.sin(lon_rad),
-            np.cos(lon_rad),
-            0
-        ])
-        
-        north = np.array([
-            -np.sin(lat_rad) * np.cos(lon_rad),
-            -np.sin(lat_rad) * np.sin(lon_rad),
-            np.cos(lat_rad)
-        ])
-        
-        up = np.array([
-            np.cos(lat_rad) * np.cos(lon_rad),
-            np.cos(lat_rad) * np.sin(lon_rad),
-            np.sin(lat_rad)
-        ])
-        
-        # Rotation matrix: columns are ENU basis vectors in ECEF
-        R = np.column_stack([east, north, up])
-        return R
     
     def load_satellite_mesh(self):
         """Load satellite mesh from OBJ file"""
@@ -585,7 +619,7 @@ class GlobeWidget(QOpenGLWidget):
         """
         if self.satellite_mesh is None:
             # Draw a simple sphere as fallback
-            px, py, pz = self.lla_to_ecef(lat, lon, alt)
+            px, py, pz = lla_to_ecef(lat, lon, alt)
             glDisable(GL_TEXTURE_2D)
             glColor3f(1, 0, 0)  # Red sphere if no mesh
             glPushMatrix()
@@ -598,10 +632,10 @@ class GlobeWidget(QOpenGLWidget):
             return
         
         # Get ECEF position
-        px, py, pz = self.lla_to_ecef(lat, lon, alt)
+        px, py, pz = lla_to_ecef(lat, lon, alt)
         
         # Get ENU to ECEF rotation matrix
-        R_enu_to_ecef = self.get_enu_to_ecef_matrix(lat, lon)
+        R_enu_to_ecef = get_enu_to_ecef_matrix(lat, lon)
         
         # Create rotation matrix for orientation in ENU frame
         # Apply rotations in order: yaw (Z), pitch (Y), roll (X) in ENU
@@ -663,32 +697,7 @@ class GlobeWidget(QOpenGLWidget):
         glPopMatrix()
         glEnable(GL_TEXTURE_2D)
         
-    def lla_to_ecef(self, lat, lon, alt):
-        """Convert latitude, longitude, altitude to ECEF coordinates
-        alt is height above Earth surface (not distance from center)"""
-        lat_rad = np.radians(lat)
-        lon_rad = np.radians(lon)
-        
-        # Total distance from Earth center = radius + altitude
-        r = self.earth_radius + alt
-        
-        x = r * np.cos(lat_rad) * np.cos(lon_rad)
-        y = r * np.cos(lat_rad) * np.sin(lon_rad)
-        z = r * np.sin(lat_rad)
-        
-        return x, y, z
     
-    def spherical_to_ecef(self, lat, lon, r):
-        """Convert spherical coordinates to ECEF
-        r is distance from Earth center (for camera positioning)"""
-        lat_rad = np.radians(lat)
-        lon_rad = np.radians(lon)
-        
-        x = r * np.cos(lat_rad) * np.cos(lon_rad)
-        y = r * np.cos(lat_rad) * np.sin(lon_rad)
-        z = r * np.sin(lat_rad)
-        
-        return x, y, z
         
     def animate(self):
         if self.auto_rotate:
@@ -706,8 +715,9 @@ class GlobeWidget(QOpenGLWidget):
             self.auto_rotate = False
         elif event.button() == Qt.RightButton:
             # Check if satellite was clicked
-             if self.check_satellite_click(event.pos().x(), event.pos().y()):
-                print ('CLICKED!')
+            pos = event.pos()
+            if self.check_satellite_click(pos.x(), pos.y()):
+               print ('CLICKED!')
         else:
             self.last_pos = event.pos()
             self.auto_rotate = False
@@ -763,31 +773,37 @@ class GlobeWidget(QOpenGLWidget):
             self.auto_rotate = True
             self.update()
 
-    def check_satellite_click(self, mouse_x, mouse_y):
+    def check_satellite_click(self, mouse_x, mouse_y, widget_x, widget_y, dpr):
         """Check if mouse click intersects with satellite using ray casting"""
         print(f"\n{'='*60}")
         print(f"CLICK DEBUG - STEP BY STEP")
         print(f"{'='*60}")
-        
-        # Handle high DPI scaling
         dpr = self.devicePixelRatio()
+         
+        print (f'self.width = {self.width}, self.height = {self.height}')
+        widget_pos = self.pos()
+        mouse_x += widget_pos.x() / dpr
+        mouse_y += widget_pos.y() / dpr
+
+        # Handle high DPI scaling
         mx = mouse_x * dpr
         my = mouse_y * dpr
         
         # Get satellite position in ECEF
-        sat_x, sat_y, sat_z = self.lla_to_ecef(
+        sat_x, sat_y, sat_z = lla_to_ecef(
             self.satellite_lat, self.satellite_lon, self.satellite_alt
         )
         sat_pos = np.array([sat_x, sat_y, sat_z])
         
         # Get camera position
-        cam_x, cam_y, cam_z = self.spherical_to_ecef(
+        cam_x, cam_y, cam_z = spherical_to_ecef(
             self.camera_lat, self.camera_lon, self.camera_distance
         )
         cam_pos = np.array([cam_x, cam_y, cam_z])
         
         print(f"\n1. POSITIONS")
         print(f"   Mouse: ({mouse_x}, {mouse_y})")
+        print(f"   dpr: {dpr}, MX: {mx}, MY: {my}")
         print(f"   Camera: ({cam_x/1e6:.2f}, {cam_y/1e6:.2f}, {cam_z/1e6:.2f}) Mm")
         print(f"   Satellite: ({sat_x/1e6:.2f}, {sat_y/1e6:.2f}, {sat_z/1e6:.2f}) Mm")
         print(f"   Distance: {np.linalg.norm(sat_pos - cam_pos)/1e6:.2f} Mm")
@@ -796,7 +812,7 @@ class GlobeWidget(QOpenGLWidget):
         viewport = glGetIntegerv(GL_VIEWPORT)
         width = viewport[2]
         height = viewport[3]
-        
+
         # Convert to NDC
         #ndc_x = (2.0 * mouse_x) / width - 1.0
         #ndc_y = 1.0 - (2.0 * mouse_y) / height
