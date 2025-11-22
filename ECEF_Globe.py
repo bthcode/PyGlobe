@@ -27,6 +27,7 @@ class GlobeWidget(QOpenGLWidget):
         self.camera_lat = 0.0  # degrees
         self.last_pos = None
         self.debug = False
+        self.max_gpu_textures = 1024
         
         # Animation
         self.rotation_speed = 0.5  # degrees per frame
@@ -344,10 +345,38 @@ class GlobeWidget(QOpenGLWidget):
                 glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, image.width(), image.height(),
                            0, GL_RGBA, GL_UNSIGNED_BYTE, image.bits())
                 
+                glGenerateMipmap(GL_TEXTURE_2D)
+                glBindTexture(GL_TEXTURE_2D,0)
+
+                # replace previous texture
+                key = (z,x,y)
+                if key in self.tile_textures:
+                    old = self.tile_textures.pop(key)
+                    try: 
+                        glDeleteTextures([old])
+                    except: 
+                        pass
+                if key in self.base_textures:
+                    old = self.base_textures.pop(key)
+                    try: 
+                        glDeleteTextures([old])
+                    except: 
+                        pass
+
+
                 if z == 3:
                     self.base_textures[(z,x,y)] = texture_id
                 else:
                     self.tile_textures[(z, x, y)] = texture_id
+
+                # pruning
+                while len(self.tile_textures) > self.max_gpu_textures:
+                    oldk, oldtex = self.tile_textures.popitem(last=False)
+                    try: 
+                        glDeleteTextures([oldtex])
+                    except: 
+                        pass
+
             
             del self.pending_tile_data[(z, x, y)]
     
@@ -720,7 +749,7 @@ class GlobeWidget(QOpenGLWidget):
         self.camera_distance *= zoom_factor
         self.camera_distance = np.clip(
             self.camera_distance, 
-            self.earth_radius * 1.5, 
+            self.earth_radius * 1.1, 
             self.earth_radius * 10
         )
         self.request_visible_tiles()
