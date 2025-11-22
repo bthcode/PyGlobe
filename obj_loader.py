@@ -172,7 +172,8 @@ class PointSceneObject(SceneObject):
         self.color = color
         self.size = size
         # Precompute world coordinates
-        self.xyz = np.array(latlon_to_app_xyz(self.lat, self.lon, self.alt, R=1.0))
+        #self.xyz = np.array(latlon_to_app_xyz(self.lat, self.lon, self.alt, R=1.0))
+        self.xyz = np.array(lla_to_ecef(self.lat, self.lon, self.alt))
 
     def draw(self):
         glPushMatrix()
@@ -204,7 +205,7 @@ class PolyLineSceneObject(SceneObject):
 
         # Precompute xyz points in app coordinates
         self.points_xyz = [
-            np.array(latlon_to_app_xyz(lat, lon, alt, R=1.0))
+            np.array(lla_to_ecef(lat, lon, alt))
             for lat, lon, alt in self.points_wgs84
         ]
 

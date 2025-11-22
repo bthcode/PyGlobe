@@ -11,6 +11,7 @@ from OpenGL.GLU import *
 
 # Assume tile_fetcher.py is in the same directory
 from tile_fetcher import TileFetcher
+from obj_loader import *
 
 def spherical_to_ecef(lat, lon, r):
     """Convert spherical coordinates to ECEF
@@ -120,6 +121,10 @@ class GlobeWidget(QOpenGLWidget):
         # Tile update throttling
         self.last_tile_request_time = 0
         self.tile_request_cooldown = 200  # ms between tile requests
+
+        # Scene - this is what holds the stuff
+        self.scene = Scene()
+        self.add_track()
         
         # Timer for animation
         if 0:
@@ -208,6 +213,22 @@ class GlobeWidget(QOpenGLWidget):
         if self.debug:
             if self.debug_ray_origin is not None and self.debug_ray_end is not None:
                 self.draw_debug_ray()
+
+        self.scene.draw()
+
+    def add_track(self)->None:
+        # Add a single point over radar site
+        self.scene.add(PointSceneObject(lat_deg=45.0, lon_deg=-93.0, alt_m=0.0,
+                                   color=(0, 0, 0), size=16))
+
+        # Add a polyline (track) connecting positions
+        track_points = [
+            (45.0, -93.0, 0.0),
+            (46.0, -92.5, 0.0),
+            (47.0, -91.8, 0.0)
+        ]
+        self.scene.add(PolyLineSceneObject(track_points, color=(0, 0, 0), width=8))
+
             
     def draw_earth(self):
         glPushMatrix()
