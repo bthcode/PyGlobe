@@ -1,7 +1,7 @@
 import sys
 import os
 import numpy as np
-from PySide6.QtWidgets import QApplication, QMainWindow, QWidget
+from PySide6.QtWidgets import QApplication, QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QLabel
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
 from PySide6.QtCore import Qt, QTimer, QThread, Signal, Slot
 from PySide6.QtGui import QImage
@@ -15,13 +15,17 @@ class GlobeWidget(QOpenGLWidget):
     # Signals for TileFetcher
     requestTile = Signal(int, int, int, str)
     setAimpoint = Signal(int, int, int)
+
+    infoSig = Signal(dict)
     
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.setMinimumSize(900,600)
         self.camera_distance = 15000000  # 15,000 km from center
         self.camera_lon = 0.0  # degrees
         self.camera_lat = 0.0  # degrees
         self.last_pos = None
+        self.debug = False
         
         # Animation
         self.rotation_speed = 0.5  # degrees per frame
@@ -61,9 +65,15 @@ class GlobeWidget(QOpenGLWidget):
         self.tile_request_cooldown = 200  # ms between tile requests
         
         # Timer for animation
-        self.timer = QTimer(self)
-        self.timer.timeout.connect(self.animate)
-        self.timer.start(16)  # ~60 FPS
+        if 0:
+            self.timer = QTimer(self)
+            self.timer.timeout.connect(self.animate)
+            self.timer.start(16)  # ~60 FPS
+
+        # Publish info to display on a timer
+        self.info_timer = QTimer(self)
+        self.info_timer.timeout.connect(self.publish_display_info)
+        self.info_timer.start(1000)
         
     def initializeGL(self):
         glEnable(GL_DEPTH_TEST)
@@ -114,11 +124,12 @@ class GlobeWidget(QOpenGLWidget):
         # Draw Earth at origin
         self.draw_earth()
         
-        # Draw coordinate axes
-        self.draw_axes()
-        
-        # Debug: Draw ENU frame at a test location
-        self.draw_coordinate_frame(42.0, -71.0, 2000000)  # Boston area, 2000km altitude
+        if self.debug:
+            # Draw coordinate axes
+            self.draw_axes()
+            
+            # Debug: Draw ENU frame at a test location
+            self.draw_coordinate_frame(42.0, -71.0, 2000000)  # Boston area, 2000km altitude
         
         # Draw satellite with orientation in local ENU
         # Orientation: (roll, pitch, yaw) in degrees in local ENU frame
@@ -126,9 +137,10 @@ class GlobeWidget(QOpenGLWidget):
                           roll=self.satellite_roll, pitch=self.satellite_pitch, yaw=self.satellite_yaw)
         
         # Draw debug ray if available
-        if self.debug_ray_origin is not None and self.debug_ray_end is not None:
-            self.draw_debug_ray()
-        
+        if self.debug:
+            if self.debug_ray_origin is not None and self.debug_ray_end is not None:
+                self.draw_debug_ray()
+            
     def draw_earth(self):
         glPushMatrix()
         glColor3f(1.0, 1.0, 1.0)  # White to show texture colors
@@ -163,6 +175,8 @@ class GlobeWidget(QOpenGLWidget):
         glEnd()
         
         glEnable(GL_LIGHTING)
+
+
     
     def calculate_zoom_level(self):
         """Calculate appropriate zoom level based on camera distance"""
@@ -173,11 +187,11 @@ class GlobeWidget(QOpenGLWidget):
             return 3
         elif altitude_mm > 5:
             return 4
-        elif altitude_mm > 2:
+        elif altitude_mm > 3:
             return 5
-        elif altitude_mm > 1:
+        elif altitude_mm > 2:
             return 6
-        elif altitude_mm > 0.5:
+        elif altitude_mm > 1:
             return 7
         else:
             return 8
@@ -191,13 +205,27 @@ class GlobeWidget(QOpenGLWidget):
         x = x % n
         y = np.clip(y, 0, n - 1)
         return x, y
+
+    def publish_display_info(self)->None:
+        '''Emit debug info'''
+        self.infoSig.emit({'level' : self.zoom_level,
+                           'center_lla' : self.center_lla,
+                           'current_tile_x' : self.current_tile_x,
+                           'current_tile_y' : self.current_tile_y }
+                          )
+
     
     def request_visible_tiles(self):
         """Request tiles that should be visible"""
         zoom = self.calculate_zoom_level()
         lat, lon = self.camera_lat, self.camera_lon
         center_x, center_y = self.latlon_to_tile(lat, lon, zoom)
-        
+
+        self.zoom_level = zoom
+        self.center_lla = {'lat' : lat, 'lon' : lon, 'alt' : 0}
+        self.current_tile_x = center_x
+        self.current_tile_y = center_y
+
         # Set aimpoint for prioritization
         self.setAimpoint.emit(zoom, center_x, center_y)
         
@@ -265,32 +293,6 @@ class GlobeWidget(QOpenGLWidget):
                 self.tile_textures[(z, x, y)] = texture_id
             
             del self.pending_tile_data[(z, x, y)]
-    
-    def load_tiles(self):
-        """Legacy - no longer used"""
-        pass
-    
-    def load_texture(self, filepath):
-        """Load a PNG texture"""
-        image = QImage(filepath)
-        if image.isNull():
-            return None
-        
-        image = image.convertToFormat(QImage.Format_RGBA8888)
-        image = image.mirrored()  # Flip vertically for OpenGL
-        
-        texture_id = glGenTextures(1)
-        glBindTexture(GL_TEXTURE_2D, texture_id)
-        
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR)
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE)
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE)
-        
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, image.width(), image.height(),
-                     0, GL_RGBA, GL_UNSIGNED_BYTE, image.bits())
-        
-        return texture_id
     
     def draw_tile(self, z, x, y):
         """Draw a single tile on the sphere"""
@@ -550,7 +552,7 @@ class GlobeWidget(QOpenGLWidget):
         R_total = R_enu_to_ecef @ R_enu
         
         # Scale the mesh (OBJ files are often in arbitrary units)
-        scale = 50000  # Scale to ~50km size
+        scale = 500000  # Scale to ~50km size
         
         # Convert to OpenGL 4x4 matrix (column-major)
         gl_matrix = np.eye(4)
@@ -861,16 +863,23 @@ class GlobeWidget(QOpenGLWidget):
         glEnable(GL_LIGHTING)
         glEnable(GL_TEXTURE_2D)
 
-class MainWindow(QMainWindow):
+class MainWindow(QWidget):
     startFetcher = Signal()
     
     def __init__(self):
         super().__init__()
         self.setWindowTitle("PySide6 OpenGL 3D Globe (ECEF)")
-        self.setGeometry(100, 100, 1024, 768)
-        
+        #self.setGeometry(100, 100, 1024, 768)
+        hbox = QHBoxLayout()
+        vbox = QVBoxLayout()
+
+        self.text = QLabel('Label')
+        vbox.addWidget(self.text)
+        hbox.addLayout(vbox)
         self.globe = GlobeWidget(self)
-        self.setCentralWidget(self.globe)
+        hbox.addWidget(self.globe)
+        self.globe.infoSig.connect(self.on_window)
+        self.setLayout(hbox)
         
         # Set up TileFetcher in separate thread
         self.fetcher_thread = QThread()
@@ -887,9 +896,18 @@ class MainWindow(QMainWindow):
         self.fetcher_thread.start()
         self.startFetcher.emit()
         
-        self.statusBar().showMessage(
-            "Drag to rotate | Scroll to zoom | Space to pause | R to reset"
-        )
+    def on_window(self, info_dict: dict):
+        s =  f"Level:    {info_dict['level']}\n"
+        s += f"Tile X:   {info_dict['current_tile_x']}\n"
+        s += f"Tile Y:   {info_dict['current_tile_y']}\n\n"
+
+        s += f"Lat:      {info_dict['center_lla']['lat']:.2f}\n"
+        s += f"Lon:      {info_dict['center_lla']['lon']:.2f}\n"
+        s += f"Alt:      {info_dict['center_lla']['alt']:.2f}\n\n"
+
+
+        self.text.setText(s)
+
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
@@ -899,6 +917,6 @@ if __name__ == '__main__':
     app.aboutToQuit.connect(window.fetcher.shutdown)
     app.aboutToQuit.connect(window.fetcher_thread.quit)
     app.aboutToQuit.connect(window.fetcher_thread.wait)
-    
+    window.resize(1200,800) 
     window.show()
     sys.exit(app.exec())
