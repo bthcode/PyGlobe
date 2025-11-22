@@ -1,5 +1,6 @@
 import sys
 import os
+from collections import OrderedDict
 import numpy as np
 from PySide6.QtWidgets import QApplication, QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QLabel
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
@@ -35,11 +36,12 @@ class GlobeWidget(QOpenGLWidget):
         self.earth_radius = 6371000
         
         # Tile textures
-        self.tile_textures = {}
+        self.tile_textures = OrderedDict()
+        self.base_textures = OrderedDict()
         self.tile_cache_path = "cache"
         self.pending_tile_data = {}  # Tiles waiting to be uploaded to GPU
-        self.inflight_tiles = set()  # Tiles currently being fetched
-        self.screen_tiles = set()  # Tiles that should be visible
+        self.inflight_tiles = {}  # Tiles currently being fetched
+        self.screen_tiles = {}  # Tiles that should be visible
         
         # OSM tile URL template
         self.tile_url_template = "https://tile.openstreetmap.org/{z}/{x}/{y}.png"
@@ -74,6 +76,9 @@ class GlobeWidget(QOpenGLWidget):
         self.info_timer = QTimer(self)
         self.info_timer.timeout.connect(self.publish_display_info)
         self.info_timer.start(1000)
+
+        self.base_layer_loaded = False
+
         
     def initializeGL(self):
         glEnable(GL_DEPTH_TEST)
@@ -105,11 +110,17 @@ class GlobeWidget(QOpenGLWidget):
         glMatrixMode(GL_MODELVIEW)
         
     def paintGL(self):
-        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
-        glLoadIdentity()
-        
+        self.makeCurrent()
+
+        if not self.base_layer_loaded:
+            self.load_base_textures()
+            self.base_layer_loaded = True
+
         # Upload any pending tile data to GPU
         self.upload_pending_tiles()
+
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
+        glLoadIdentity()
         
         # Calculate camera position in ECEF (camera_distance is from center)
         cam_x, cam_y, cam_z = self.spherical_to_ecef(
@@ -144,10 +155,16 @@ class GlobeWidget(QOpenGLWidget):
     def draw_earth(self):
         glPushMatrix()
         glColor3f(1.0, 1.0, 1.0)  # White to show texture colors
+
+        # Draw base layer
+        for tile, _ in self.base_textures.items():
+            if tile in self.base_textures:
+                self.draw_tile(*tile)
         
-        # Draw all loaded tiles
-        for (z, x, y), texture_id in self.tile_textures.items():
-            self.draw_tile(z, x, y)
+        # Draw current screen tiles
+        for tile, _ in self.screen_tiles.items():
+            if tile in self.tile_textures:
+                self.draw_tile(*tile)
         
         glPopMatrix()
         
@@ -183,7 +200,7 @@ class GlobeWidget(QOpenGLWidget):
         altitude = self.camera_distance - self.earth_radius
         altitude_mm = altitude / 1e6
         
-        if altitude_mm > 10:
+        if altitude_mm > 8:
             return 3
         elif altitude_mm > 5:
             return 4
@@ -243,21 +260,45 @@ class GlobeWidget(QOpenGLWidget):
             x_radius, y_radius = 5, 6
         
         # Build set of tiles that should be visible
-        new_screen_tiles = set()
+        new_screen_tiles = {}
         for dx in range(-x_radius, x_radius + 1):
             for dy in range(-y_radius, y_radius + 1):
                 x = (center_x + dx) % n
                 y = center_y + dy
                 if 0 <= y < n:
                     tile_key = (zoom, x, y)
-                    new_screen_tiles.add(tile_key)
+                    new_screen_tiles[tile_key] = True
                     
                     # Request if not already loaded or in flight
-                    if tile_key not in self.tile_textures and tile_key not in self.inflight_tiles:
-                        self.inflight_tiles.add(tile_key)
-                        self.requestTile.emit(zoom, x, y, self.tile_url_template)
+                    #if tile_key not in self.base_textures and tile_key not in self.tile_textures and tile_key not in self.inflight_tiles:
+                     #   self.inflight_tiles.add(tile_key)
+                    #    self.requestTile.emit(zoom, x, y, self.tile_url_template)
         
+                    self.request_tile((zoom,x,y))
         self.screen_tiles = new_screen_tiles
+
+    def request_tile(self,key: [int,int,int])->None:
+        '''If a tile is not already loaded, emit a request
+        Params
+        ------
+        key: (z,x,y)
+        '''
+        if key in self.inflight_tiles: 
+            return
+        if key in self.tile_textures:
+            return
+        if key in self.pending_tile_data:
+            return
+        if key in self.base_textures:
+            return
+        #if key in self.pending_tiles:
+        #    return
+        z,x,y = key
+        #if z<MIN_Z or z>MAX_Z: 
+        #    return
+        self.inflight_tiles[key] = True
+        self.requestTile.emit(z,x,y,self.tile_url_template)
+
     
     @Slot(int, int, int, bytes)
     def on_tile_ready(self, z, x, y, data):
@@ -265,11 +306,24 @@ class GlobeWidget(QOpenGLWidget):
         tile_key = (z, x, y)
         
         # Remove from inflight
-        self.inflight_tiles.discard(tile_key)
+        del self.inflight_tiles[tile_key]
         
         # Store data to be uploaded to GPU in next paintGL call
         self.pending_tile_data[tile_key] = data
         self.update()
+
+    def load_base_textures(self):
+        '''Ensure lowest level of map is always loaded'''
+        # Always draw level3
+        base_z = 3
+        n = 2**base_z
+        xs = np.arange(n)
+        ys = np.arange(n)
+        for x in xs:
+            for y in ys:
+                key = (base_z,int(x),int(y))
+                self.request_tile(key)
+
     
     def upload_pending_tiles(self):
         """Upload pending tile data to GPU"""
@@ -290,13 +344,19 @@ class GlobeWidget(QOpenGLWidget):
                 glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, image.width(), image.height(),
                            0, GL_RGBA, GL_UNSIGNED_BYTE, image.bits())
                 
-                self.tile_textures[(z, x, y)] = texture_id
+                if z == 3:
+                    self.base_textures[(z,x,y)] = texture_id
+                else:
+                    self.tile_textures[(z, x, y)] = texture_id
             
             del self.pending_tile_data[(z, x, y)]
     
     def draw_tile(self, z, x, y):
         """Draw a single tile on the sphere"""
-        texture_id = self.tile_textures.get((z, x, y))
+        if z == 3:
+            texture_id = self.base_textures.get((z,x,y))
+        else:
+            texture_id = self.tile_textures.get((z, x, y))
         if not texture_id:
             return
         
@@ -312,7 +372,7 @@ class GlobeWidget(QOpenGLWidget):
         lat_min = self.tile_y_to_lat(y + 1, z)
         
         # Draw tile as a quad mesh on the sphere
-        steps = 10  # subdivisions for better sphere approximation
+        steps = 7  # subdivisions for better sphere approximation
         
         glBegin(GL_QUADS)
         for i in range(steps):
@@ -552,7 +612,7 @@ class GlobeWidget(QOpenGLWidget):
         R_total = R_enu_to_ecef @ R_enu
         
         # Scale the mesh (OBJ files are often in arbitrary units)
-        scale = 500000  # Scale to ~50km size
+        scale = 50000  # Scale to ~50km size
         
         # Convert to OpenGL 4x4 matrix (column-major)
         gl_matrix = np.eye(4)
@@ -617,14 +677,12 @@ class GlobeWidget(QOpenGLWidget):
         if event.button() == Qt.LeftButton:
             # Force a render to ensure matrices are current
             self.makeCurrent()
-            
+            self.last_pos = event.pos()
+            self.auto_rotate = False
+        elif event.button() == Qt.RightButton:
             # Check if satellite was clicked
-            if 0 and self.check_satellite_click(event.pos().x(), event.pos().y()):
-                print(f"✓✓✓ SATELLITE CLICKED! ✓✓✓")
-            else:
-                # Start dragging camera
-                self.last_pos = event.pos()
-                self.auto_rotate = False
+             if self.check_satellite_click(event.pos().x(), event.pos().y()):
+                print ('CLICKED!')
         else:
             self.last_pos = event.pos()
             self.auto_rotate = False
@@ -677,7 +735,7 @@ class GlobeWidget(QOpenGLWidget):
             self.camera_distance = 15000000
             self.auto_rotate = True
             self.update()
-    
+
     def check_satellite_click(self, mouse_x, mouse_y):
         """Check if mouse click intersects with satellite using ray casting"""
         print(f"\n{'='*60}")
@@ -713,8 +771,11 @@ class GlobeWidget(QOpenGLWidget):
         height = viewport[3]
         
         # Convert to NDC
-        ndc_x = (2.0 * mouse_x) / width - 1.0
-        ndc_y = 1.0 - (2.0 * mouse_y) / height
+        #ndc_x = (2.0 * mouse_x) / width - 1.0
+        #ndc_y = 1.0 - (2.0 * mouse_y) / height
+        # Convert to NDC using PHYSICAL coordinates
+        ndc_x = (2.0 * mx) / width - 1.0
+        ndc_y = 1.0 - (2.0 * my) / height
         
         print(f"\n2. NORMALIZED DEVICE COORDS")
         print(f"   Viewport: {width} x {height}")
@@ -822,6 +883,8 @@ class GlobeWidget(QOpenGLWidget):
         else:
             print(f"\n   ✗ MISS")
             return False
+
+    
     
     def draw_debug_ray(self):
         """Draw the last cast ray for debugging"""
@@ -875,6 +938,7 @@ class MainWindow(QWidget):
 
         self.text = QLabel('Label')
         vbox.addWidget(self.text)
+        # TODO - adding this column throws off the raycasting calcs
         hbox.addLayout(vbox)
         self.globe = GlobeWidget(self)
         hbox.addWidget(self.globe)
