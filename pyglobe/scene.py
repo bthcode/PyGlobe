@@ -653,7 +653,7 @@ def add_test_objects(scene, satellite_obj_path="assets/satellite/satellite.obj",
         points_wgs84=track_points,
         color=(1.0, 1.0, 0.0),  # Yellow
         width=6.0,
-        altitude_offset=0,
+        altitude_offset=2000, # earth curvature
         pick_radius=25000
     )
     scene.add(track)
@@ -667,17 +667,17 @@ def add_test_objects(scene, satellite_obj_path="assets/satellite/satellite.obj",
         radius_meters=200000,  # 200 km
         color=(0.0, 1.0, 0.0),  # Green
         width=3.0,
-        altitude_offset=10.0
+        altitude_offset=2000 # Earth curvature
     )
     scene.add(circle)
     print("Added: Green circle around Denver (200km radius)")
 
     # 4. Polygon - Square over Texas
     polygon_points = [
-        (30.0, -100.0, 0),  # Southwest corner
-        (30.0, -95.0, 0),   # Southeast corner
-        (35.0, -95.0, 0),   # Northeast corner
-        (35.0, -100.0, 0)   # Northwest corner
+        (33.0, -96.0, 0),  # Southwest corner
+        (33.0, -95.0, 0),   # Southeast corner
+        (34.0, -95.0, 0),   # Northeast corner
+        (34.0, -96.0, 0)   # Northwest corner
     ]
     polygon = PolygonSceneObject(
         'Example Polygon',
@@ -685,7 +685,7 @@ def add_test_objects(scene, satellite_obj_path="assets/satellite/satellite.obj",
         color=(1.0, 0.5, 0.0),  # Orange outline
         fill_color=(1.0, 0.5, 0.0, 0.3),  # Semi-transparent orange fill
         width=3.0,
-        altitude_offset=10.0
+        altitude_offset=2000.0 # Account for earth curvature
     )
     scene.add(polygon)
     print("Added: Orange polygon over Texas")
@@ -702,7 +702,7 @@ def add_test_objects(scene, satellite_obj_path="assets/satellite/satellite.obj",
             'Example Image',
             corners_wgs84=image_corners,
             image_path=image_path,
-            altitude_offset=10.0,
+            altitude_offset=2000.0, # Account for earth curvature
             alpha=0.7
         )
         scene.add(image_overlay)
