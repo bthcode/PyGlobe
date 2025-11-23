@@ -11,6 +11,7 @@ from OpenGL.GLU import *
 
 from pyglobe import globe
 from pyglobe import tile_fetcher
+from pyglobe import scene
 
 class MainWindow(QWidget):
     startFetcher = Signal()
@@ -24,12 +25,19 @@ class MainWindow(QWidget):
 
         self.text = QLabel('Label')
         vbox.addWidget(self.text)
+
+        self.additional_text = QLabel('')
+        vbox.addWidget(self.additional_text)
+
         # TODO - adding this column throws off the raycasting calcs
         hbox.addLayout(vbox)
         self.globe = globe.GlobeWidget(self)
         hbox.addWidget(self.globe)
         self.globe.infoSig.connect(self.on_window)
         self.setLayout(hbox)
+
+        scene.add_test_objects(self.globe.scene) 
+        self.globe.sigObjectClicked.connect(self.print_object)
         
         # Set up TileFetcher in separate thread
         self.fetcher_thread = QThread()
@@ -46,8 +54,8 @@ class MainWindow(QWidget):
         self.fetcher_thread.start()
         self.startFetcher.emit()
 
-    def add_test_objects(self):
-        pass
+    def print_object(self, obj: scene.SceneObject):
+        self.additional_text.setText(f'Clicked: {obj.label}')
         
     def on_window(self, info_dict: dict):
         s =  f"Level:    {info_dict['level']}\n"

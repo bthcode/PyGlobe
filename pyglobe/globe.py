@@ -18,8 +18,8 @@ class GlobeWidget(QOpenGLWidget):
     # Signals for TileFetcher
     requestTile = Signal(int, int, int, str)
     setAimpoint = Signal(int, int, int)
-
     infoSig = Signal(dict)
+    sigObjectClicked = Signal(SceneObject)
     
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -55,7 +55,7 @@ class GlobeWidget(QOpenGLWidget):
 
         # Scene - this is what holds the stuff
         self.scene = Scene()
-        self.add_debug_objects()
+        self.scene.sigClicked.connect(self.on_object_clicked)
         
         # Publish info to display on a timer
         self.info_timer = QTimer(self)
@@ -514,8 +514,9 @@ class GlobeWidget(QOpenGLWidget):
         glEnable(GL_LIGHTING)
         glEnable(GL_TEXTURE_2D)
     
-    
-            
+    def on_object_clicked(self, obj):
+        self.sigObjectClicked.emit(obj)
+
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
             # Force a render to ensure matrices are current
@@ -526,8 +527,7 @@ class GlobeWidget(QOpenGLWidget):
             # Check if satellite was clicked
             pos = event.pos()
             ray_origin, ray_direction = self.mouse_to_ray(pos.x(), pos.y())
-            picked = self.scene.pick(ray_origin, ray_direction)
-            print (picked)
+            self.scene.pick(ray_origin, ray_direction)
         else:
             self.last_pos = event.pos()
             self.auto_rotate = False
@@ -725,7 +725,7 @@ class MainWindow(QWidget):
         hbox.addWidget(self.globe)
         self.globe.infoSig.connect(self.on_window)
         self.setLayout(hbox)
-        
+
         # Set up TileFetcher in separate thread
         self.fetcher_thread = QThread()
         self.fetcher = TileFetcher(cache_dir="cache")

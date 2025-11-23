@@ -1,5 +1,6 @@
 from OpenGL.GL import *
 from OpenGL.GLU import *
+from PySide6.QtCore import QObject, Signal
 import numpy as np
 import os
 from pyglobe.coord_utils import lla_to_ecef, spherical_to_ecef, get_enu_to_ecef_matrix
@@ -70,8 +71,9 @@ class SceneObject:
 class SceneModel(SceneObject):
     """3D model loaded from OBJ file, positioned at lat/lon/alt with ENU orientation"""
     
-    def __init__(self, lat_deg, lon_deg, alt_m, scale, obj_path, roll=0, pitch=0, yaw=0, pick_radius=200000):
+    def __init__(self, label, lat_deg, lon_deg, alt_m, scale, obj_path, roll=0, pitch=0, yaw=0, pick_radius=200000):
         super().__init__()
+        self.label = label
         self.lat = lat_deg
         self.lon = lon_deg
         self.alt = alt_m
@@ -191,8 +193,9 @@ class SceneModel(SceneObject):
 class PointSceneObject(SceneObject):
     """Single point marker"""
     
-    def __init__(self, lat, lon, alt=0.0, color=(1.0, 0.0, 0.0), size=15.0, pick_radius=50000):
+    def __init__(self, label, lat, lon, alt=0.0, color=(1.0, 0.0, 0.0), size=15.0, pick_radius=50000):
         super().__init__()
+        self.label = label
         self.lat = lat
         self.lon = lon
         self.alt = alt
@@ -234,9 +237,10 @@ class PointSceneObject(SceneObject):
 class PolyLineSceneObject(SceneObject):
     """Connected line segments"""
     
-    def __init__(self, points_wgs84, color=(1.0, 1.0, 0.0), width=4.0, 
+    def __init__(self, label, points_wgs84, color=(1.0, 1.0, 0.0), width=4.0, 
                  altitude_offset=0.0, pick_radius=25000):
         super().__init__()
+        self.label = label
         self.points_wgs84 = points_wgs84
         self.color = color
         self.width = width
@@ -321,9 +325,10 @@ class PolyLineSceneObject(SceneObject):
 class CircleSceneObject(SceneObject):
     """Circle on the ground"""
     
-    def __init__(self, center_lat, center_lon, radius_meters, 
+    def __init__(self, label, center_lat, center_lon, radius_meters, 
                  color=(0.0, 1.0, 0.0), width=2.0, num_points=64, altitude_offset=10.0):
         super().__init__()
+        self.label = label
         self.center_lat = center_lat
         self.center_lon = center_lon
         self.radius_meters = radius_meters
@@ -392,9 +397,10 @@ class CircleSceneObject(SceneObject):
 class PolygonSceneObject(SceneObject):
     """Polygon on the ground defined by corner points"""
     
-    def __init__(self, points_wgs84, color=(1.0, 0.5, 0.0), fill_color=None, 
+    def __init__(self, label, points_wgs84, color=(1.0, 0.5, 0.0), fill_color=None, 
                  width=2.0, altitude_offset=10.0, alpha=0.5):
         super().__init__()
+        self.label = label
         self.points_wgs84 = points_wgs84
         self.color = color
         self.fill_color = fill_color if fill_color else (*color, alpha)
@@ -463,12 +469,13 @@ class PolygonSceneObject(SceneObject):
 class ImageOverlaySceneObject(SceneObject):
     """Textured image on the ground with 4 corner points"""
     
-    def __init__(self, corners_wgs84, image_path, altitude_offset=10.0, alpha=1.0):
+    def __init__(self, label, corners_wgs84, image_path, altitude_offset=10.0, alpha=1.0):
         """
         corners_wgs84: list of 4 tuples [(lat, lon, alt), ...] in order: 
                        bottom-left, bottom-right, top-right, top-left
         """
         super().__init__()
+        self.label = label
         self.corners_wgs84 = corners_wgs84
         self.image_path = image_path
         self.altitude_offset = altitude_offset
@@ -560,10 +567,13 @@ class ImageOverlaySceneObject(SceneObject):
 # Scene Container
 # =============================================================================
 
-class Scene:
+class Scene(QObject):
     """Container for all scene objects"""
+
+    sigClicked = Signal(SceneObject)
     
     def __init__(self):
+        super().__init__()
         self.objects = []
     
     def add(self, obj):
@@ -603,7 +613,8 @@ class Scene:
             except NotImplementedError:
                 continue
         
-        return (closest_obj, closest_dist) if closest_obj else (None, None)
+        if closest_obj is not None:
+            self.sigClicked.emit(closest_obj)
 
 # TEST 
 def add_test_objects(scene, satellite_obj_path="assets/satellite/satellite.obj",
@@ -619,6 +630,7 @@ def add_test_objects(scene, satellite_obj_path="assets/satellite/satellite.obj",
 
     # 1. Point - Red marker over New York
     point = PointSceneObject(
+        'Example Point',
         lat=40.7128,
         lon=-74.0060,
         alt=0,
@@ -637,6 +649,7 @@ def add_test_objects(scene, satellite_obj_path="assets/satellite/satellite.obj",
         (38.9072, -77.0369, 0)       # Washington DC
     ]
     track = PolyLineSceneObject(
+        'Example Track',
         points_wgs84=track_points,
         color=(1.0, 1.0, 0.0),  # Yellow
         width=6.0,
@@ -648,6 +661,7 @@ def add_test_objects(scene, satellite_obj_path="assets/satellite/satellite.obj",
 
     # 3. Circle - 200km radius around Denver
     circle = CircleSceneObject(
+        'Example Circle',
         center_lat=39.7392,
         center_lon=-104.9903,
         radius_meters=200000,  # 200 km
@@ -666,6 +680,7 @@ def add_test_objects(scene, satellite_obj_path="assets/satellite/satellite.obj",
         (35.0, -100.0, 0)   # Northwest corner
     ]
     polygon = PolygonSceneObject(
+        'Example Polygon',
         points_wgs84=polygon_points,
         color=(1.0, 0.5, 0.0),  # Orange outline
         fill_color=(1.0, 0.5, 0.0, 0.3),  # Semi-transparent orange fill
@@ -685,6 +700,7 @@ def add_test_objects(scene, satellite_obj_path="assets/satellite/satellite.obj",
                 (36.0, -120.0, 0)   # Top-left
             ]
             image_overlay = ImageOverlaySceneObject(
+                'Example Image',
                 corners_wgs84=image_corners,
                 image_path=image_path,
                 altitude_offset=10.0,
@@ -698,6 +714,7 @@ def add_test_objects(scene, satellite_obj_path="assets/satellite/satellite.obj",
     # 6. SceneModel - Satellite over Miami
     if os.path.exists(satellite_obj_path):
         satellite = SceneModel(
+            'Example Mesh Object',
             lat_deg=25.7617,
             lon_deg=-80.1918,
             alt_m=500000,  # 500 km altitude
