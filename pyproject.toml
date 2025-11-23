@@ -1,0 +1,30 @@
+[project]
+name = "pyglobe"
+version = "0.1.0"
+description = "PySide6 OpenGL Globe Widget"
+authors = [
+    { name = "Brian Hone" },
+]
+dependencies = [
+    "PySide6",
+    "PyOpenGL",
+    "requests",
+    "urllib3",
+    "pillow",
+    "numpy",
+]
+requires-python = ">=3.8"
+readme = "README.md"
+license = { text = "MIT License" }
+keywords = ["pyside6", "python", "opengl"]
+
+[project.urls]
+Homepage = "https://github.com/bthcode/PyGlobe"
+Repository = "https://github.com/bthcode/PyGlobe"
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["pyglobe"]
