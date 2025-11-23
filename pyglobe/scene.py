@@ -690,26 +690,25 @@ def add_test_objects(scene, satellite_obj_path="assets/satellite/satellite.obj",
     scene.add(polygon)
     print("Added: Orange polygon over Texas")
 
-    if 1:
-        # 5. Image Overlay - SAR image over California
-        if os.path.exists(image_path):
-            image_corners = [
-                (34.0, -120.0, 0),  # Bottom-left
-                (34.0, -118.0, 0),  # Bottom-right
-                (36.0, -118.0, 0),  # Top-right
-                (36.0, -120.0, 0)   # Top-left
-            ]
-            image_overlay = ImageOverlaySceneObject(
-                'Example Image',
-                corners_wgs84=image_corners,
-                image_path=image_path,
-                altitude_offset=10.0,
-                alpha=0.7
-            )
-            scene.add(image_overlay)
-            print(f"Added: Image overlay over California ({image_path})")
-        else:
-            print(f"Warning: Image not found: {image_path}")
+    # 5. Image Overlay - SAR image over California
+    if os.path.exists(image_path):
+        image_corners = [
+            (34.0, -120.0, 0),  # Bottom-left
+            (34.0, -118.0, 0),  # Bottom-right
+            (36.0, -118.0, 0),  # Top-right
+            (36.0, -120.0, 0)   # Top-left
+        ]
+        image_overlay = ImageOverlaySceneObject(
+            'Example Image',
+            corners_wgs84=image_corners,
+            image_path=image_path,
+            altitude_offset=10.0,
+            alpha=0.7
+        )
+        scene.add(image_overlay)
+        print(f"Added: Image overlay over California ({image_path})")
+    else:
+        print(f"Warning: Image not found: {image_path}")
 
     # 6. SceneModel - Satellite over Miami
     if os.path.exists(satellite_obj_path):
@@ -718,11 +717,11 @@ def add_test_objects(scene, satellite_obj_path="assets/satellite/satellite.obj",
             lat_deg=25.7617,
             lon_deg=-80.1918,
             alt_m=500000,  # 500 km altitude
-            scale=50000,   # 50 km apparent size
+            scale=200000,   # 50 km apparent size
             obj_path=satellite_obj_path,
             roll=0,
             pitch=0,
-            yaw=0,
+            yaw=-90,
             pick_radius=200000
         )
         scene.add(satellite)

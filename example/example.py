@@ -13,13 +13,11 @@ from pyglobe import globe
 from pyglobe import tile_fetcher
 from pyglobe import scene
 
-class MainWindow(QWidget):
+class GlobeTestWidget(QWidget):
     startFetcher = Signal()
     
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("PySide6 OpenGL 3D Globe (ECEF)")
-        #self.setGeometry(100, 100, 1024, 768)
         hbox = QHBoxLayout()
         vbox = QVBoxLayout()
 
@@ -69,6 +67,15 @@ class MainWindow(QWidget):
 
         self.text.setText(s)
 
+class MainWindow(QMainWindow):
+    
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("PySide6 OpenGL 3D Globe (ECEF)")
+        self.globe_widget = GlobeTestWidget()
+        self.setCentralWidget(self.globe_widget)
+        self.statusBar().showMessage('Left click/drag to move. Right click to select objects')
+
 
 if __name__ == '__main__':
     # Create a diretory for tile caching
@@ -78,9 +85,9 @@ if __name__ == '__main__':
     window = MainWindow()
     
     # Cleanup on exit
-    app.aboutToQuit.connect(window.fetcher.shutdown)
-    app.aboutToQuit.connect(window.fetcher_thread.quit)
-    app.aboutToQuit.connect(window.fetcher_thread.wait)
+    app.aboutToQuit.connect(window.globe_widget.fetcher.shutdown)
+    app.aboutToQuit.connect(window.globe_widget.fetcher_thread.quit)
+    app.aboutToQuit.connect(window.globe_widget.fetcher_thread.wait)
     window.resize(1200,800) 
     window.show()
     sys.exit(app.exec())
