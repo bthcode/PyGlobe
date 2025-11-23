@@ -1,0 +1,39 @@
+site_name: My Awesome Project
+site_description: Documentation for My Awesome Project
+site_author: John Doe
+site_url: https://example.com/my-project/
+
+nav:
+  - Home: 'index.md'
+#  - User Guide: 'user-guide.md'
+#  - API Reference: 'api-reference.md'
+#  - About: 'about.md'
+
+theme:
+  name: readthedocs # Or 'readthedocs', 'mkdocs', etc.
+  palette:
+    - scheme: default
+      primary: teal
+      accent: amber
+      toggle:
+        icon: material/brightness-4
+        name: Switch to dark mode
+    - scheme: slate
+      primary: blue
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to light mode
+  features:
+    - navigation.tabs
+    - navigation.indexes
+    - search.suggest
+    - search.highlight
+    - content.code.annotate
+    - content.tabs.link
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.highlight
