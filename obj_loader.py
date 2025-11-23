@@ -193,12 +193,22 @@ class SceneModel(SceneObject):
         # Quadratic equation coefficients
         a = np.dot(ray_direction, ray_direction)
         b = 2.0 * np.dot(oc, ray_direction)
+        self.pick_radius = 150000
         c = np.dot(oc, oc) - self.pick_radius ** 2
 
         discriminant = b * b - 4 * a * c
+        print (f"NEW: discriminant={discriminant}")
 
+
+        # Closest approach
+        #t_closest = -np.dot(oc, ray_direction) / np.dot(ray_direction, ray_direction)
+        #closest_point = cam_pos + t_closest * ray_dir_world
+        #closest_dist = np.linalg.norm(closest_point - sat_pos)
+
+        #print(f"   Closest approach: {closest_dist}")
         if discriminant < 0:
             return None
+
 
         # Return closest intersection distance
         t = (-b - np.sqrt(discriminant)) / (2 * a)

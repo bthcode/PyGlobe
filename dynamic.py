@@ -36,7 +36,7 @@ from OpenGL.GLU import *
 
 DOWNLOAD_TIMEOUT = 10
 TILE_URL = "https://tile.openstreetmap.org/{z}/{x}/{y}.png"  # common XYZ server (y top origin)
-CACHE_ROOT= "./osm_cache"
+CACHE_ROOT= "./cache"
 
 USER_AGENT = "PyGlobe Example/1.0 (your_email@example.com)"  # set a sensible UA
 TILE_SIZE = 512
@@ -60,7 +60,298 @@ from obj_loader import *
 
 
 
+def get_enu_to_ecef_matrix(lat_deg, lon_deg):
+    """
+    Get rotation matrix to convert from local ENU frame to ECEF/v2 frame.
 
+    ENU Frame (local tangent plane at lat/lon):
+    - E (East): Points east along the tangent
+    - N (North): Points north along the tangent
+    - U (Up): Points radially outward from Earth
+
+    This matrix transforms vectors from ENU to v2/ECEF coordinates.
+
+    Parameters:
+        lat_deg: Latitude in degrees
+        lon_deg: Longitude in degrees
+
+    Returns:
+        3x3 numpy rotation matrix
+    """
+    lat = np.radians(lat_deg)
+    lon = np.radians(lon_deg)
+
+    sin_lat = np.sin(lat)
+    cos_lat = np.cos(lat)
+    sin_lon = np.sin(lon)
+    cos_lon = np.cos(lon)
+
+    # Standard ENU to ECEF rotation matrix
+    # Each column is where ENU basis vector points in ECEF
+    R = np.array([
+        [-sin_lon,           -sin_lat * cos_lon,  cos_lat * cos_lon],  # X_ecef
+        [ cos_lon,           -sin_lat * sin_lon,  cos_lat * sin_lon],  # Y_ecef
+        [ 0.0,                cos_lat,            sin_lat          ]   # Z_ecef
+    ])
+
+    return R
+
+
+def enu_vector_to_v2(vel_enu, lat_deg, lon_deg):
+    """
+    Convert a vector from local ENU frame to standard v2/ECEF frame.
+
+    Parameters:
+        vel_enu: [east, north, up] vector in m/s (or any units)
+        lat_deg: Latitude where ENU frame is defined
+        lon_deg: Longitude where ENU frame is defined
+
+    Returns:
+        [x, y, z] vector in v2 coordinate frame
+    """
+    R = get_enu_to_ecef_matrix(lat_deg, lon_deg)
+    vel_v2 = R @ np.array(vel_enu, dtype=float)
+    return vel_v2
+
+
+def draw_velocity_arrow(lat_deg, lon_deg, alt_m,
+                       vel_east, vel_north, vel_up,
+                       scale=0.0001,
+                       color=(1.0, 1.0, 0.0),
+                       line_width=4.0,
+                       point_size=8.0):
+    """
+    Draw a velocity arrow in the local ENU frame at a given location.
+
+    This function:
+    1. Converts lat/lon/alt to position in v2 space
+    2. Converts ENU velocity to v2 space
+    3. Adapts both to old OpenGL space for rendering
+    4. Draws the arrow
+
+    Parameters:
+        lat_deg: Latitude of arrow origin (degrees)
+        lon_deg: Longitude of arrow origin (degrees)
+        alt_m: Altitude of arrow origin (meters)
+        vel_east: Eastward velocity component (m/s)
+        vel_north: Northward velocity component (m/s)
+        vel_up: Upward velocity component (m/s)
+        scale: Scale factor for arrow length (adjust to make visible)
+        color: RGB tuple (0-1 range)
+        line_width: Width of arrow shaft
+        point_size: Size of arrow head point
+
+    Example:
+        # Draw arrow for satellite moving 7000 m/s east, 1000 m/s north
+        draw_velocity_arrow(
+            lat_deg=30.0,
+            lon_deg=-100.0,
+            alt_m=400_000,
+            vel_east=7000,
+            vel_north=1000,
+            vel_up=0,
+            scale=0.00005
+        )
+    """
+
+    # 1. Get position in STANDARD v2 space
+    pos_v2 = np.array(latlon_to_xyz_v2(lat_deg, lon_deg, alt_m, R=1.0))
+
+    # 2. Convert ENU velocity to v2 space
+    vel_enu = np.array([vel_east, vel_north, vel_up], dtype=float)
+    vel_v2 = enu_vector_to_v2(vel_enu, lat_deg, lon_deg)
+
+    # 3. Scale velocity for visibility
+    vel_v2_scaled = vel_v2 * scale
+
+    # 4. Adapt to OLD OpenGL coordinate space
+    pos_old = np.array(new_to_old_coords(*pos_v2))
+    vel_old = np.array(new_to_old_coords(*vel_v2_scaled))
+
+    # 5. Calculate arrow endpoint
+    endpoint_old = pos_old + vel_old
+
+    # 6. Draw the arrow
+    # Save OpenGL state
+    prev_line_width = glGetFloatv(GL_LINE_WIDTH)
+    prev_point_size = glGetFloatv(GL_POINT_SIZE)
+    prev_color = glGetFloatv(GL_CURRENT_COLOR)
+
+    try:
+        # Draw arrow shaft (line)
+        glLineWidth(line_width)
+        glColor3f(*color)
+        glBegin(GL_LINES)
+        glVertex3f(*pos_old)
+        glVertex3f(*endpoint_old)
+        glEnd()
+
+        # Draw arrow head (point)
+        glPointSize(point_size)
+        glColor3f(1,0,0)
+        glBegin(GL_POINTS)
+        glVertex3f(*endpoint_old)
+        glEnd()
+
+    finally:
+        # Restore OpenGL state
+        glLineWidth(float(prev_line_width))
+        glPointSize(float(prev_point_size))
+        glColor4fv(prev_color)
+
+
+def draw_enu_basis_vectors(lat_deg, lon_deg, alt_m=0.0, scale=0.1):
+    """
+    Draw the ENU coordinate frame axes at a location (for debugging).
+
+    Red = East
+    Green = North
+    Blue = Up
+
+    Parameters:
+        lat_deg: Latitude (degrees)
+        lon_deg: Longitude (degrees)
+        alt_m: Altitude (meters) - use positive value to lift above surface
+        scale: Length of basis vectors
+    """
+    # Position (with altitude to see above tiles)
+    pos_v2 = np.array(latlon_to_xyz_v2(lat_deg, lon_deg, alt_m, R=1.0))
+    pos_old = np.array(new_to_old_coords(*pos_v2))
+
+    # Get ENU basis vectors in v2 space
+    R_enu_to_v2 = get_enu_to_ecef_matrix(lat_deg, lon_deg)
+
+    # Extract basis vectors (columns of rotation matrix)
+    east_v2 = R_enu_to_v2[:, 0] * scale
+    north_v2 = R_enu_to_v2[:, 1] * scale
+    up_v2 = R_enu_to_v2[:, 2] * scale
+
+    # DEBUG: Print what's happening at (0, 0)
+    ##if abs(lat_deg) < 0.1 and abs(lon_deg) < 0.1:
+    ##    print(f"\n=== ENU DEBUG at ({lat_deg:.1f}°, {lon_deg:.1f}°) ===")
+    ##    print(f"Position v2: {pos_v2}")
+    ##    print(f"Position old: {pos_old}")
+    ##    print(f"Up vector v2: {up_v2}")
+    ##    print(f"Up vector old: {new_to_old_coords(*up_v2)}")
+    ##    print(f"Does up point away from origin? {np.dot(pos_v2, up_v2) > 0}")
+
+    # Adapt to old space
+    east_old = np.array(new_to_old_coords(*east_v2))
+    north_old = np.array(new_to_old_coords(*north_v2))
+    up_old = np.array(new_to_old_coords(*up_v2))
+
+    # Save state
+    prev_line_width = glGetFloatv(GL_LINE_WIDTH)
+    prev_color = glGetFloatv(GL_CURRENT_COLOR)
+
+    try:
+        glLineWidth(3.0)
+
+        # Draw East (Red)
+        glColor3f(1, 0, 0)
+        glBegin(GL_LINES)
+        glVertex3f(*pos_old)
+        glVertex3f(*(pos_old + east_old))
+        glEnd()
+
+        # Draw North (Green)
+        glColor3f(0, 1, 0)
+        glBegin(GL_LINES)
+        glVertex3f(*pos_old)
+        glVertex3f(*(pos_old + north_old))
+        glEnd()
+
+        # Draw Up (Blue)
+        glColor3f(0, 0, 1)
+        glBegin(GL_LINES)
+        glVertex3f(*pos_old)
+        glVertex3f(*(pos_old + up_old))
+        glEnd()
+
+    finally:
+        glLineWidth(float(prev_line_width))
+        glColor4fv(prev_color)
+
+
+
+# Example 1: Satellite moving east and north
+def test_satellite_velocity():
+    """
+    Add this call in your paintGL() method to test:
+    """
+    draw_velocity_arrow(
+        lat_deg=30.0,
+        lon_deg=30.0,
+        alt_m=400_000,  # 400 km altitude
+        vel_east=0,   # 7 km/s eastward
+        vel_north=0,  # 1 km/s northward
+        vel_up=1000,
+        scale=0.00005,
+        color=(1.0, 1.0, 0.0)
+    )
+
+# Example 2: Show ENU frame at a location
+def test_enu_frame():
+    """
+    Add this call in your paintGL() method to visualize ENU axes:
+    Test multiple locations to verify correctness
+    """
+    # Test at Prime Meridian
+    draw_enu_basis_vectors(
+        lat_deg=0.0,
+        lon_deg=0.0,
+        alt_m=500_000,  # 500 km altitude
+        scale=0.2
+    )
+
+    # Test at North Pole
+    draw_enu_basis_vectors(
+        lat_deg=89.0,  # Close to pole (90° can be numerically unstable)
+        lon_deg=0.0,
+        alt_m=500_000,
+        scale=0.2
+    )
+
+    # Test at Bay of Bengal (90°E)
+    draw_enu_basis_vectors(
+        lat_deg=0.0,
+        lon_deg=90.0,
+        alt_m=500_000,
+        scale=0.2
+    )
+
+    # Test at your location
+    draw_enu_basis_vectors(
+        lat_deg=45.0,
+        lon_deg=-93.0,
+        alt_m=500_000,
+        scale=0.2
+    )
+
+# Example 3: Aircraft with heading and climb
+def test_aircraft():
+    """
+    Aircraft at 10km altitude, heading northeast, climbing
+    """
+    # Convert heading to ENU components
+    heading_deg = 45  # Northeast
+    speed_horizontal = 250  # m/s
+    climb_rate = 10  # m/s
+    
+    vel_east = speed_horizontal * np.sin(np.radians(heading_deg))
+    vel_north = speed_horizontal * np.cos(np.radians(heading_deg))
+    vel_up = climb_rate
+    
+    draw_velocity_arrow(
+        lat_deg=42.0,
+        lon_deg=-71.0,
+        alt_m=10_000,
+        vel_east=vel_east,
+        vel_north=vel_north,
+        vel_up=vel_up,
+        scale=0.0002,
+        color=(1.0, 0.5, 0.0)
+    )
 #-------------------------------------------------------
 # OpenGL Widget
 #-------------------------------------------------------
@@ -70,6 +361,7 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
     setAimpoint = Signal(int, int, int)
     resetFetcher = Signal()
     sigShutdownFetcher = Signal()
+    sigStartFetcher = Signal()
     def __init__(self):
         super().__init__()
         self.setMinimumSize(900,600)
@@ -133,16 +425,19 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
 
         # background loader queues
         self.fetcher = TileFetcher(cache_dir=CACHE_ROOT)
+        self.sigShutdownFetcher.connect(self.fetcher.shutdown)
+        self.sigStartFetcher.connect(self.fetcher.start)
         self.fetcher_thread = QThread()
         self.fetcher.moveToThread(self.fetcher_thread)
         self.fetcher_thread.start()
+
 
         # Fetcher Control
         self.requestTile.connect(self.fetcher.requestTile)
         self.setAimpoint.connect(self.fetcher.setAimpoint)
         self.resetFetcher.connect(self.fetcher.reset)
-        self.sigShutdownFetcher.connect(self.fetcher.shutdown)
         self.fetcher.tileReady.connect(self.onTileReady)
+        self.sigStartFetcher.emit()
 
         #----------------------------
         # Load base layer
@@ -162,7 +457,7 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
     def shutdownFetcher(self):
         '''Shut Down Tile Fetching Thread'''
         self.sigShutdownFetcher.emit()
-        time.sleep(1)
+        time.sleep(2)
         self.fetcher_thread.quit()
         self.fetcher_thread.wait()
 
@@ -302,6 +597,9 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
             lat0, lat1 = tile2lat(y+1, level_z), tile2lat(y, level_z)
             self._draw_spherical_tile_v2(lat0, lat1, lon0, lon1, tex, alpha=1.0)  # <- NEW
         self.scene.draw()
+        test_satellite_velocity()
+        test_aircraft()
+        test_enu_frame()
 
     # ----------------- pending/result handling -----------------
     @Slot(int,int,int,bytes)
@@ -635,11 +933,12 @@ class GlobeOfflineTileAligned(QOpenGLWidget):
     # ----------------- interaction -----------------
     def mousePressEvent(self, event):
         if event.button() == Qt.RightButton:
-            x, y = event.x(), event.y()
+            #x, y = event.x(), event.y()
+            pass
 
-            w = self.width()
-            h = self.height()
-            self.scene.pick(x,y, self)
+            #w = self.width()
+            #h = self.height()
+            #self.scene.pick(x,y, self)
 
 
         else:

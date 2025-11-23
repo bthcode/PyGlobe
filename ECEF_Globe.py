@@ -965,8 +965,8 @@ class GlobeWidget(QOpenGLWidget):
         
         print(f"\n6. INTERSECTION TEST")
         print(f"   Sphere radius: {sphere_radius/1000:.0f} km")
-        print(f"   Discriminant: {discriminant:.2e}")
-        print(f"   Closest approach: {closest_dist/1000:.2f} km")
+        print(f"   Discriminant: {discriminant}")
+        print(f"   Closest approach: {closest_dist}")
         
         if discriminant >= 0:
             print(f"\n   ✓✓✓ HIT! ✓✓✓")
@@ -1030,7 +1030,7 @@ class MainWindow(QWidget):
         self.text = QLabel('Label')
         vbox.addWidget(self.text)
         # TODO - adding this column throws off the raycasting calcs
-        #hbox.addLayout(vbox)
+        hbox.addLayout(vbox)
         self.globe = GlobeWidget(self)
         hbox.addWidget(self.globe)
         self.globe.infoSig.connect(self.on_window)
