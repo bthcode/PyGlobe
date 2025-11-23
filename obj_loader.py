@@ -107,36 +107,63 @@ class OBJLoader:
 class SceneObject:
     def draw(self):
         pass
+
     def on_click(self):
         print(f"{self.__class__.__name__} clicked")
 
+    def intersect_ray(self, ray_origin, ray_direction):
+        """
+        Test if ray intersects this object.
+
+        Parameters:
+            ray_origin: numpy array [x, y, z] in ECEF
+            ray_direction: normalized numpy array [x, y, z] in ECEF
+
+        Returns:
+            distance (float) if hit, None if miss
+        """
+        raise NotImplementedError
+
+
 class SceneModel(SceneObject):
-    def __init__(self, lat_deg, lon_deg, alt_m, scale, obj_path):
-        self.lat_deg = lat_deg
-        self.lon_deg = lon_deg
-        self.alt_m = alt_m
+    def __init__(self, lat_deg, lon_deg, alt_m, scale, obj_path, roll, pitch, yaw):
+        self.lat = lat_deg
+        self.lon = lon_deg
+        self.alt = alt_m
         self.scale = scale
-        self.position = np.array(latlon_to_app_xyz(self.lat_deg, self.lon_deg, self.alt_m))
-        self.rotation = self.calc_rotation()
-        self.mesh = OBJLoader.load(obj_path)
-        self.points_syz = self.position
-    def calc_rotation(self):
-        dir_vec = -self.position.astype(float)
-        norm = np.linalg.norm(dir_vec)
-        dir_vec /= norm
-        dx, dy, dz = dir_vec[0], dir_vec[1], dir_vec[2]
+        self.roll = roll
+        self.pitch = pitch
+        self.yaw = yaw
+        self.ecef_pos = lla_to_ecef(self.lat,self.lon,self.alt)
+        self.pick_radius = 200_000
 
-        # yaw: rotation around Y so forward (+Z local) points toward dir_vec
-        yaw = np.degrees(np.atan2(dx, dz))
+        #self.mesh = OBJLoader.load(obj_path)
+        #self.points_syz = self.position
+        vertices = []
+        faces = []
+        
+        try:
+            with open(obj_path, 'r') as f:
+                for line in f:
+                    if line.startswith('v '):
+                        parts = line.split()
+                        vertices.append([float(parts[1]), float(parts[2]), float(parts[3])])
+                    elif line.startswith('f '):
+                        parts = line.split()
+                        # Handle faces like "f 1 2 3" or "f 1/1/1 2/2/2 3/3/3"
+                        face = []
+                        for p in parts[1:]:
+                            face.append(int(p.split('/')[0]) - 1)  # OBJ indices start at 1
+                        faces.append(face)
+            
+            self.mesh = {
+                'vertices': np.array(vertices),
+                'faces': faces
+            }
+            print(f"Loaded satellite mesh: {len(vertices)} vertices, {len(faces)} faces")
+        except Exception as e:
+            print(f"Error loading satellite mesh: {e}")
 
-        # pitch: rotation around local X so forward axis tilts up/down toward dir_vec
-        pitch = np.degrees(np.atan2(dy, np.sqrt(dx*dx + dz*dz)))
-
-        # optional small self-spin about local forward axis (roll) or around model Z:
-        roll = 0.0
-        # assign into your satect rotation (X=pitch, Y=yaw, Z=roll)
-        rotation = np.array([pitch, yaw, roll])
-        return rotation
     def draw(self):
         glPushMatrix()
         glTranslatef(*self.position)
@@ -158,6 +185,102 @@ class SceneModel(SceneObject):
 
         glPopMatrix()
 
+    def intersect_ray(self, ray_origin, ray_direction):
+        """Ray-sphere intersection for picking"""
+        # Vector from ray origin to sphere center
+        oc = ray_origin - self.ecef_pos
+
+        # Quadratic equation coefficients
+        a = np.dot(ray_direction, ray_direction)
+        b = 2.0 * np.dot(oc, ray_direction)
+        c = np.dot(oc, oc) - self.pick_radius ** 2
+
+        discriminant = b * b - 4 * a * c
+
+        if discriminant < 0:
+            return None
+
+        # Return closest intersection distance
+        t = (-b - np.sqrt(discriminant)) / (2 * a)
+        return t if t >= 0 else None
+
+    def draw(self):
+        self.draw_mesh(self.lat, self.lon, self.alt, self.roll, self.pitch, self.yaw)
+
+    def draw_mesh(self, lat, lon, alt, roll=0, pitch=0, yaw=0):
+        """Draw satellite at specified location with ENU orientation
+        roll, pitch, yaw are in degrees in local ENU frame
+        roll: rotation about east axis
+        pitch: rotation about north axis  
+        yaw: rotation about up axis
+        """
+        
+        # Get ECEF position
+        px, py, pz = lla_to_ecef(lat, lon, alt)
+        
+        # Get ENU to ECEF rotation matrix
+        R_enu_to_ecef = get_enu_to_ecef_matrix(lat, lon)
+        
+        # Create rotation matrix for orientation in ENU frame
+        # Apply rotations in order: yaw (Z), pitch (Y), roll (X) in ENU
+        roll_rad = np.radians(roll)
+        pitch_rad = np.radians(pitch)
+        yaw_rad = np.radians(yaw)
+        
+        # Roll (rotation about East - X axis in ENU)
+        Rx = np.array([
+            [1, 0, 0],
+            [0, np.cos(roll_rad), -np.sin(roll_rad)],
+            [0, np.sin(roll_rad), np.cos(roll_rad)]
+        ])
+        
+        # Pitch (rotation about North - Y axis in ENU)
+        Ry = np.array([
+            [np.cos(pitch_rad), 0, np.sin(pitch_rad)],
+            [0, 1, 0],
+            [-np.sin(pitch_rad), 0, np.cos(pitch_rad)]
+        ])
+        
+        # Yaw (rotation about Up - Z axis in ENU)
+        Rz = np.array([
+            [np.cos(yaw_rad), -np.sin(yaw_rad), 0],
+            [np.sin(yaw_rad), np.cos(yaw_rad), 0],
+            [0, 0, 1]
+        ])
+        
+        # Combined rotation in ENU
+        R_enu = Rz @ Ry @ Rx
+        
+        # Total rotation: ENU orientation -> ECEF
+        R_total = R_enu_to_ecef @ R_enu
+        
+        # Scale the mesh (OBJ files are often in arbitrary units)
+        scale = 200000  # Scale to ~50km size
+        
+        # Convert to OpenGL 4x4 matrix (column-major)
+        gl_matrix = np.eye(4)
+        gl_matrix[:3, :3] = R_total * scale  # Include scale in rotation
+        gl_matrix[:3, 3] = [px, py, pz]
+        
+        glDisable(GL_TEXTURE_2D)
+        glPushMatrix()
+        
+        # Apply transformation matrix
+        glMultMatrixf(gl_matrix.T.flatten())  # Transpose for OpenGL column-major
+        
+        # Draw the mesh
+        glColor3f(0.8, 0.8, 0.8)  # Light gray
+        
+        for face in self.mesh['faces']:
+            glBegin(GL_POLYGON)
+            for vertex_idx in face:
+                v = self.mesh['vertices'][vertex_idx]
+                glVertex3f(v[0], v[1], v[2])
+            glEnd()
+        
+        glPopMatrix()
+        glEnable(GL_TEXTURE_2D)
+     
 
 
 # ---------------------------------------------------------------------
@@ -239,5 +362,25 @@ class Scene:
     def draw(self):
         for obj in self.objects:
             obj.draw()
+
+    def pick(self, ray_origin, ray_direction):
+        """Find closest object hit by ray"""
+        closest_obj = None
+        closest_dist = float('inf')
+
+        for obj in self.objects:
+            try:
+                dist = obj.intersect_ray(ray_origin, ray_direction)
+                print (f'distance: {dist}')
+            except NotImplementedError:
+                continue
+            if dist is not None and dist < closest_dist:
+                closest_dist = dist
+                closest_obj = obj
+
+        return closest_obj, closest_dist if closest_obj else None
+
+
+
 
 
