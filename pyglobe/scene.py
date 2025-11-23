@@ -326,7 +326,7 @@ class CircleSceneObject(SceneObject):
     """Circle on the ground"""
     
     def __init__(self, label, center_lat, center_lon, radius_meters, 
-                 color=(0.0, 1.0, 0.0), width=2.0, num_points=64, altitude_offset=10.0):
+                 color=(0.0, 1.0, 0.0), fill_color=None, width=2.0, num_points=64, altitude_offset=10.0):
         super().__init__()
         self.label = label
         self.center_lat = center_lat
@@ -335,6 +335,7 @@ class CircleSceneObject(SceneObject):
         self.color = color
         self.width = width
         self.altitude_offset = altitude_offset
+        self.fill_color=fill_color
         
         # Generate circle points
         earth_radius = 6371000
@@ -364,6 +365,20 @@ class CircleSceneObject(SceneObject):
             
             glEnable(GL_POLYGON_OFFSET_LINE)
             glPolygonOffset(-1.0, -1.0)
+
+            # Draw filled polygon
+            if self.fill_color:
+                glEnable(GL_BLEND)
+                glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
+                glColor4f(*self.fill_color)
+                
+                glBegin(GL_POLYGON)
+                for p in self.points_xyz:
+                    glVertex3f(*p)
+                glEnd()
+                
+                glDisable(GL_BLEND)
+
             
             glColor3f(*self.color)
             glLineWidth(self.width)
@@ -631,8 +646,8 @@ def add_test_objects(scene, satellite_obj_path="assets/satellite/satellite.obj",
     # 1. Point - Red marker over New York
     point = PointSceneObject(
         'Example Point',
-        lat=40.7128,
-        lon=-74.0060,
+        lat=42.3601,
+        lon=-71.0589,
         alt=0,
         color=(1.0, 0.0, 0.0),  # Red
         size=20.0,
@@ -651,8 +666,8 @@ def add_test_objects(scene, satellite_obj_path="assets/satellite/satellite.obj",
     track = PolyLineSceneObject(
         'Example Track',
         points_wgs84=track_points,
-        color=(1.0, 1.0, 0.0),  # Yellow
-        width=6.0,
+        color=(0.0, 0.0, 0.0),  # Yellow
+        width=8.0,
         altitude_offset=2000, # earth curvature
         pick_radius=25000
     )
@@ -664,8 +679,9 @@ def add_test_objects(scene, satellite_obj_path="assets/satellite/satellite.obj",
         'Example Circle',
         center_lat=39.7392,
         center_lon=-104.9903,
-        radius_meters=200000,  # 200 km
-        color=(0.0, 1.0, 0.0),  # Green
+        radius_meters=100000,
+        color=(0.0, 0.0, 0.0),
+        fill_color=(0.0, 0.5, 0.0, 0.3),
         width=3.0,
         altitude_offset=2000 # Earth curvature
     )
