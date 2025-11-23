@@ -12,15 +12,19 @@ Status
 Installation
 ------------
 
->> pip install -e .
+```
+pip install -e .
+```
 
 - NOTE: Will install pyside6, pyopengl, numpy, requests, pillow
 
 Usage
 -----
 
->> cd example/
->> python example.py
+```
+cd example/
+python example.py
+```
 
 Code Overview
 -------------
