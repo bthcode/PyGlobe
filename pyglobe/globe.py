@@ -10,9 +10,9 @@ from OpenGL.GL import *
 from OpenGL.GLU import *
 
 # Assume tile_fetcher.py is in the same directory
-from tile_fetcher import TileFetcher
-from obj_loader import *
-from coord_utils import *
+from pyglobe.tile_fetcher import TileFetcher
+from pyglobe.scene import *
+from pyglobe.coord_utils import *
 
 class GlobeWidget(QOpenGLWidget):
     # Signals for TileFetcher

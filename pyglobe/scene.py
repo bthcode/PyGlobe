@@ -2,7 +2,7 @@ from OpenGL.GL import *
 from OpenGL.GLU import *
 import numpy as np
 import os
-from coord_utils import lla_to_ecef, spherical_to_ecef, get_enu_to_ecef_matrix
+from pyglobe.coord_utils import lla_to_ecef, spherical_to_ecef, get_enu_to_ecef_matrix
 from contextlib import contextmanager
 
 
