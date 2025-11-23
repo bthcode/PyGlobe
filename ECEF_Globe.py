@@ -45,18 +45,6 @@ class GlobeWidget(QOpenGLWidget):
         # OSM tile URL template
         self.tile_url_template = "https://tile.openstreetmap.org/{z}/{x}/{y}.png"
         
-        # Satellite mesh
-        #self.satellite_mesh = None
-        self.satellite_obj_path = "assets/satellite/satellite.obj"
-        
-        # Satellite state (for click detection)
-        self.satellite_lat = 42.0
-        self.satellite_lon = -71.0
-        self.satellite_alt = 500000
-        self.satellite_roll = 0
-        self.satellite_pitch = 0
-        self.satellite_yaw = 0
-        
         # Debug ray casting
         self.debug_ray_origin = None
         self.debug_ray_end = None
@@ -67,15 +55,8 @@ class GlobeWidget(QOpenGLWidget):
 
         # Scene - this is what holds the stuff
         self.scene = Scene()
-        self.add_track()
-        self.load_satellite()
+        self.add_debug_objects()
         
-        # Timer for animation
-        if 0:
-            self.timer = QTimer(self)
-            self.timer.timeout.connect(self.animate)
-            self.timer.start(16)  # ~60 FPS
-
         # Publish info to display on a timer
         self.info_timer = QTimer(self)
         self.info_timer.timeout.connect(self.publish_display_info)
@@ -112,8 +93,8 @@ class GlobeWidget(QOpenGLWidget):
         glLoadIdentity()
         gluPerspective(45, w / h if h > 0 else 1, 100000, 50000000)
         glMatrixMode(GL_MODELVIEW)
-        self.width = w
-        self.height = h
+        #self.width = w
+        #self.height = h
         
     def paintGL(self):
         self.makeCurrent()
@@ -161,29 +142,8 @@ class GlobeWidget(QOpenGLWidget):
 
         self.scene.draw()
 
-    def load_satellite(self)->None:
-        #------------------------------------------------------
-        # Load a satellite
-        base = os.path.dirname(__file__)
-        sat_path = os.path.join(base, "assets/satellite/satellite.obj")
-        roll = 0; pitch = 0; yaw = 0
-        sat = SceneModel(self.satellite_lat, self.satellite_lon, self.satellite_alt, 
-                         np.array([0.1,0.1,0.1]), sat_path, roll, pitch, yaw)
-        self.scene.add(sat)
-
-    def add_track(self)->None:
-        # Add a single point over radar site
-        self.scene.add(PointSceneObject(lat_deg=45.0, lon_deg=-93.0, alt_m=0.0,
-                                   color=(0, 0, 0), size=16))
-
-        # Add a polyline (track) connecting positions
-        track_points = [
-            (45.0, -93.0, 0.0),
-            (46.0, -92.5, 0.0),
-            (47.0, -91.8, 0.0)
-        ]
-        self.scene.add(PolyLineSceneObject(track_points, color=(0, 0, 0), width=8))
-
+    def add_debug_objects(self)->None:
+        add_test_objects(self.scene)
             
     def draw_earth(self):
         glPushMatrix()
@@ -555,133 +515,6 @@ class GlobeWidget(QOpenGLWidget):
         glEnable(GL_TEXTURE_2D)
     
     
-    ##def load_satellite_mesh(self):
-    ##    """Load satellite mesh from OBJ file"""
-    ##    if not os.path.exists(self.satellite_obj_path):
-    ##        print(f"Warning: Satellite mesh '{self.satellite_obj_path}' not found")
-    ##        return
-    ##    
-    ##    vertices = []
-    ##    faces = []
-    ##    
-    ##    try:
-    ##        with open(self.satellite_obj_path, 'r') as f:
-    ##            for line in f:
-    ##                if line.startswith('v '):
-    ##                    parts = line.split()
-    ##                    vertices.append([float(parts[1]), float(parts[2]), float(parts[3])])
-    ##                elif line.startswith('f '):
-    ##                    parts = line.split()
-    ##                    # Handle faces like "f 1 2 3" or "f 1/1/1 2/2/2 3/3/3"
-    ##                    face = []
-    ##                    for p in parts[1:]:
-    ##                        face.append(int(p.split('/')[0]) - 1)  # OBJ indices start at 1
-    ##                    faces.append(face)
-    ##        
-    ##        self.satellite_mesh = {
-    ##            'vertices': np.array(vertices),
-    ##            'faces': faces
-    ##        }
-    ##        print(f"Loaded satellite mesh: {len(vertices)} vertices, {len(faces)} faces")
-    ##    except Exception as e:
-    ##        print(f"Error loading satellite mesh: {e}")
-    
-    ## def draw_satellite(self, lat, lon, alt, roll=0, pitch=0, yaw=0):
-    ##     """Draw satellite at specified location with ENU orientation
-    ##     roll, pitch, yaw are in degrees in local ENU frame
-    ##     roll: rotation about east axis
-    ##     pitch: rotation about north axis  
-    ##     yaw: rotation about up axis
-    ##     """
-    ##     if self.satellite_mesh is None:
-    ##         # Draw a simple sphere as fallback
-    ##         px, py, pz = lla_to_ecef(lat, lon, alt)
-    ##         glDisable(GL_TEXTURE_2D)
-    ##         glColor3f(1, 0, 0)  # Red sphere if no mesh
-    ##         glPushMatrix()
-    ##         glTranslatef(px, py, pz)
-    ##         quadric = gluNewQuadric()
-    ##         gluSphere(quadric, 100000, 16, 16)  # 100km radius
-    ##         gluDeleteQuadric(quadric)
-    ##         glPopMatrix()
-    ##         glEnable(GL_TEXTURE_2D)
-    ##         return
-    ##     
-    ##     # Get ECEF position
-    ##     px, py, pz = lla_to_ecef(lat, lon, alt)
-    ##     
-    ##     # Get ENU to ECEF rotation matrix
-    ##     R_enu_to_ecef = get_enu_to_ecef_matrix(lat, lon)
-    ##     
-    ##     # Create rotation matrix for orientation in ENU frame
-    ##     # Apply rotations in order: yaw (Z), pitch (Y), roll (X) in ENU
-    ##     roll_rad = np.radians(roll)
-    ##     pitch_rad = np.radians(pitch)
-    ##     yaw_rad = np.radians(yaw)
-    ##     
-    ##     # Roll (rotation about East - X axis in ENU)
-    ##     Rx = np.array([
-    ##         [1, 0, 0],
-    ##         [0, np.cos(roll_rad), -np.sin(roll_rad)],
-    ##         [0, np.sin(roll_rad), np.cos(roll_rad)]
-    ##     ])
-    ##     
-    ##     # Pitch (rotation about North - Y axis in ENU)
-    ##     Ry = np.array([
-    ##         [np.cos(pitch_rad), 0, np.sin(pitch_rad)],
-    ##         [0, 1, 0],
-    ##         [-np.sin(pitch_rad), 0, np.cos(pitch_rad)]
-    ##     ])
-    ##     
-    ##     # Yaw (rotation about Up - Z axis in ENU)
-    ##     Rz = np.array([
-    ##         [np.cos(yaw_rad), -np.sin(yaw_rad), 0],
-    ##         [np.sin(yaw_rad), np.cos(yaw_rad), 0],
-    ##         [0, 0, 1]
-    ##     ])
-    ##     
-    ##     # Combined rotation in ENU
-    ##     R_enu = Rz @ Ry @ Rx
-    ##     
-    ##     # Total rotation: ENU orientation -> ECEF
-    ##     R_total = R_enu_to_ecef @ R_enu
-    ##     
-    ##     # Scale the mesh (OBJ files are often in arbitrary units)
-    ##     scale = 200000  # Scale to ~50km size
-    ##     
-    ##     # Convert to OpenGL 4x4 matrix (column-major)
-    ##     gl_matrix = np.eye(4)
-    ##     gl_matrix[:3, :3] = R_total * scale  # Include scale in rotation
-    ##     gl_matrix[:3, 3] = [px, py, pz]
-    ##     
-    ##     glDisable(GL_TEXTURE_2D)
-    ##     glPushMatrix()
-    ##     
-    ##     # Apply transformation matrix
-    ##     glMultMatrixf(gl_matrix.T.flatten())  # Transpose for OpenGL column-major
-    ##     
-    ##     # Draw the mesh
-    ##     glColor3f(0.8, 0.8, 0.8)  # Light gray
-    ##     
-    ##     for face in self.satellite_mesh['faces']:
-    ##         glBegin(GL_POLYGON)
-    ##         for vertex_idx in face:
-    ##             v = self.satellite_mesh['vertices'][vertex_idx]
-    ##             glVertex3f(v[0], v[1], v[2])
-    ##         glEnd()
-    ##     
-    ##     glPopMatrix()
-    ##     glEnable(GL_TEXTURE_2D)
-        
-    
-        
-    def animate(self):
-        if self.auto_rotate:
-            self.camera_lon += self.rotation_speed
-            if self.camera_lon >= 360:
-                self.camera_lon -= 360
-            self.update_tiles()
-            self.update()
             
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
@@ -692,8 +525,6 @@ class GlobeWidget(QOpenGLWidget):
         elif event.button() == Qt.RightButton:
             # Check if satellite was clicked
             pos = event.pos()
-            self.check_satellite_click(pos.x(), pos.y())
-            #   print ('CLICKED!')
             ray_origin, ray_direction = self.mouse_to_ray(pos.x(), pos.y())
             picked = self.scene.pick(ray_origin, ray_direction)
             print (picked)
@@ -752,6 +583,7 @@ class GlobeWidget(QOpenGLWidget):
             self.auto_rotate = True
             self.update()
 
+    
     def mouse_to_ray(self, mouse_x, mouse_y):
         """
         Convert mouse coordinates to a ray in ECEF space.
@@ -764,17 +596,30 @@ class GlobeWidget(QOpenGLWidget):
         """
         # Handle high DPI scaling
         dpr = self.devicePixelRatio()
+
+        # Use widget dimensions, not viewport (viewport can be wrong in layouts)
+        widget_w = self.width()
+        widget_h = self.height()
+        w = widget_w * dpr
+        h = widget_h * dpr
+
+        # Scale mouse coordinates
         mx = mouse_x * dpr
         my = mouse_y * dpr
 
-        # Get viewport
-        viewport = glGetIntegerv(GL_VIEWPORT)
-        w = viewport[2]
-        h = viewport[3]
+        if self.debug:
+            print(f"Mouse: ({mouse_x}, {mouse_y})")
+            print(f"Widget size: {widget_w} x {widget_h}")
+            print(f"DPR: {dpr}")
+            print(f"Effective size: {w} x {h}")
+            print(f"Scaled mouse: ({mx}, {my})")
 
-        # Convert to NDC
+        # Convert to NDC using widget dimensions
         ndc_x = (2.0 * mx) / w - 1.0
         ndc_y = 1.0 - (2.0 * my) / h
+
+        if self.debug:
+            print(f"NDC: ({ndc_x:.3f}, {ndc_y:.3f})")
 
         # Get camera position in ECEF
         cam_x, cam_y, cam_z = spherical_to_ecef(
@@ -782,14 +627,23 @@ class GlobeWidget(QOpenGLWidget):
         )
         cam_pos = np.array([cam_x, cam_y, cam_z])
 
-        # Camera basis vectors
-        forward = -cam_pos / np.linalg.norm(cam_pos)
+        # Camera basis vectors (matching check_satellite_click)
+        # Forward: from camera toward origin
+        center = np.array([0.0, 0.0, 0.0])
+        eye = cam_pos
         world_up = np.array([0.0, 0.0, 1.0])
+
+        forward = center - eye
+        forward = forward / np.linalg.norm(forward)
+
+        # Right: cross product of forward and up
         right = np.cross(forward, world_up)
         if np.linalg.norm(right) < 0.001:
             right = np.array([1.0, 0.0, 0.0])
         else:
             right = right / np.linalg.norm(right)
+
+        # Up: cross product of right and forward
         up = np.cross(right, forward)
         up = up / np.linalg.norm(up)
 
@@ -811,172 +665,8 @@ class GlobeWidget(QOpenGLWidget):
                         (-ray_dir_cam[2]) * forward)
         ray_dir_world = ray_dir_world / np.linalg.norm(ray_dir_world)
 
-        print (f'NEW: ray_dir_world = {ray_dir_world}')
-        print (f'NEW: cam_pos = {cam_pos}')
         return cam_pos, ray_dir_world
 
-
-    def check_satellite_click(self, mouse_x, mouse_y):
-        """Check if mouse click intersects with satellite using ray casting"""
-        print(f"\n{'='*60}")
-        print(f"CLICK DEBUG - STEP BY STEP")
-        print(f"{'='*60}")
-        dpr = self.devicePixelRatio()
-         
-        ##print (f'self.width = {self.width}, self.height = {self.height}')
-        ##widget_pos = self.pos()
-        ##mouse_x += widget_pos.x() / dpr
-        ##mouse_y += widget_pos.y() / dpr
-
-        # Handle high DPI scaling
-        mx = mouse_x * dpr
-        my = mouse_y * dpr
-
-        # Get viewport
-        viewport = glGetIntegerv(GL_VIEWPORT)
-        width = viewport[2]
-        height = viewport[3]
-
-        ndc_x = (2.0 * mx) / width - 1.0
-        ndc_y = 1.0 - (2.0 * my) / height
-        
-        # Get satellite position in ECEF
-        sat_x, sat_y, sat_z = lla_to_ecef(
-            self.satellite_lat, self.satellite_lon, self.satellite_alt
-        )
-        sat_pos = np.array([sat_x, sat_y, sat_z])
-        
-        # Get camera position
-        cam_x, cam_y, cam_z = spherical_to_ecef(
-            self.camera_lat, self.camera_lon, self.camera_distance
-        )
-        cam_pos = np.array([cam_x, cam_y, cam_z])
-        
-        print(f"\n1. POSITIONS")
-        print(f"   Mouse: ({mouse_x}, {mouse_y})")
-        print(f"   dpr: {dpr}, MX: {mx}, MY: {my}")
-        print(f"   Camera: ({cam_x/1e6:.2f}, {cam_y/1e6:.2f}, {cam_z/1e6:.2f}) Mm")
-        print(f"   Satellite: ({sat_x/1e6:.2f}, {sat_y/1e6:.2f}, {sat_z/1e6:.2f}) Mm")
-        print(f"   Distance: {np.linalg.norm(sat_pos - cam_pos)/1e6:.2f} Mm")
-        
-
-        # Convert to NDC
-        #ndc_x = (2.0 * mouse_x) / width - 1.0
-        #ndc_y = 1.0 - (2.0 * mouse_y) / height
-        # Convert to NDC using PHYSICAL coordinates
-        
-        print(f"\n2. NORMALIZED DEVICE COORDS")
-        print(f"   Viewport: {width} x {height}")
-        print(f"   Mouse: ({mouse_x}, {mouse_y})")
-        print(f"   Center would be: ({width/2:.1f}, {height/2:.1f})")
-        print(f"   NDC: ({ndc_x:.3f}, {ndc_y:.3f}) - center is (0, 0)")
-        
-        # Camera basis vectors (matching gluLookAt behavior)
-        # gluLookAt(eye, center, up) builds a camera matrix
-        # Forward: from eye toward center
-        center = np.array([0.0, 0.0, 0.0])
-        eye = cam_pos
-        world_up = np.array([0.0, 0.0, 1.0])
-        
-        forward = center - eye  # Direction from eye to center
-        forward = forward / np.linalg.norm(forward)
-        
-        # Right: cross product of forward and up
-        right = np.cross(forward, world_up)
-        if np.linalg.norm(right) < 0.001:
-            right = np.array([1.0, 0.0, 0.0])
-        else:
-            right = right / np.linalg.norm(right)
-        
-        # Up: cross product of right and forward (to make orthonormal)
-        up = np.cross(right, forward)
-        up = up / np.linalg.norm(up)
-        
-        print(f"\n3. CAMERA BASIS VECTORS")
-        print(f"   Forward: ({forward[0]:7.4f}, {forward[1]:7.4f}, {forward[2]:7.4f})")
-        print(f"   Right:   ({right[0]:7.4f}, {right[1]:7.4f}, {right[2]:7.4f})")
-        print(f"   Up:      ({up[0]:7.4f}, {up[1]:7.4f}, {up[2]:7.4f})")
-        
-        # Build ray in camera space
-        fov = 45.0
-        aspect = width / height if height > 0 else 1
-        fov_rad = np.radians(fov)
-        tan_half_fov = np.tan(fov_rad / 2.0)
-        
-        # Camera space: +X=right, +Y=up, -Z=forward
-        ray_cam_x = ndc_x * aspect * tan_half_fov
-        ray_cam_y = ndc_y * tan_half_fov
-        ray_cam_z = -1.0
-        
-        # DON'T normalize yet!
-        ray_dir_cam = np.array([ray_cam_x, ray_cam_y, ray_cam_z])
-        
-        print(f"\n4. RAY IN CAMERA SPACE")
-        print(f"   ray_dir_cam (unnormalized): ({ray_dir_cam[0]:7.4f}, {ray_dir_cam[1]:7.4f}, {ray_dir_cam[2]:7.4f})")
-        
-        # Transform to world space
-        # In camera space: -Z is forward
-        # ray_dir_cam = (x, y, -1) should map to: x*right + y*up + forward
-        # Since ray_dir_cam[2] = -1, we need to negate it: -ray_dir_cam[2] = 1
-        ray_dir_world = (ray_dir_cam[0] * right + 
-                        ray_dir_cam[1] * up + 
-                        (-ray_dir_cam[2]) * forward)  # Negate the Z component!
-        ray_dir_world = ray_dir_world / np.linalg.norm(ray_dir_world)
-        
-        # What direction SHOULD center of screen point?
-        expected_center = forward
-        
-        print(f"\n5. RAY IN WORLD SPACE")
-        print(f"   Formula: ray_cam.x*right + ray_cam.y*up + (-ray_cam.z)*forward")
-        print(f"   Values: {ray_dir_cam[0]:.3f}*right + {ray_dir_cam[1]:.3f}*up + {-ray_dir_cam[2]:.3f}*forward")
-        print(f"   ray_dir_world: ({ray_dir_world[0]:7.4f}, {ray_dir_world[1]:7.4f}, {ray_dir_world[2]:7.4f})")
-        print(f"   Expected (center): ({expected_center[0]:7.4f}, {expected_center[1]:7.4f}, {expected_center[2]:7.4f})")
-        
-        # CRITICAL TEST: Does (0,0,-1) map to forward?
-        test_cam = np.array([0.0, 0.0, -1.0])
-        test_world = (test_cam[0] * right + test_cam[1] * up + (-test_cam[2]) * forward)
-        test_world_norm = test_world / np.linalg.norm(test_world)
-        dot_test = np.dot(test_world_norm, forward)
-        print(f"   VERIFY: (0,0,-1) -> ({test_world_norm[0]:.4f}, {test_world_norm[1]:.4f}, {test_world_norm[2]:.4f})")
-        print(f"   Dot with forward: {dot_test:.6f} <<< SHOULD BE 1.0")
-        
-        # Store for visualization
-        self.debug_ray_origin = cam_pos
-        self.debug_ray_end = cam_pos + ray_dir_world * 10000000
-        self.update()
-        
-        # Ray-sphere intersection
-        sphere_radius = 150000  # 150km radius - reasonable click target
-        
-        oc = cam_pos - sat_pos
-        a = np.dot(ray_dir_world, ray_dir_world)
-        b = 2.0 * np.dot(oc, ray_dir_world)
-        c = np.dot(oc, oc) - sphere_radius ** 2
-        
-        discriminant = b * b - 4 * a * c
-        
-        # Closest approach
-        t_closest = -np.dot(oc, ray_dir_world) / np.dot(ray_dir_world, ray_dir_world)
-        closest_point = cam_pos + t_closest * ray_dir_world
-        closest_dist = np.linalg.norm(closest_point - sat_pos)
-
-        print (f"Old: ray_dir_world: {ray_dir_world}")
-        print (f"Old: cam_pos: {cam_pos}")
-        
-        print(f"\n6. INTERSECTION TEST")
-        print(f"   Sphere radius: {sphere_radius/1000:.0f} km")
-        print(f"   Discriminant: {discriminant}")
-        print(f"   Closest approach: {closest_dist}")
-        
-        if discriminant >= 0:
-            print(f"\n   ✓✓✓ HIT! ✓✓✓")
-            return True
-        else:
-            print(f"\n   ✗ MISS")
-            return False
-
-    
-    
     def draw_debug_ray(self):
         """Draw the last cast ray for debugging"""
         if self.debug_ray_origin is None or self.debug_ray_end is None:
