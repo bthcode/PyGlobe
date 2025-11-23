@@ -12,6 +12,16 @@ Status
 Installation
 ------------
 
+- NOTE: This has been tested with python 3.13.9
+- Optional CONDA setup:
+
+```
+conda create --name pyglobe python=3.13
+conda activate pyglove
+```
+
+- Install:
+
 ```
 pip install -e .
 ```
