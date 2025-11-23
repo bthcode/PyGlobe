@@ -12,7 +12,7 @@ Status
 Installation
 ------------
 
-- NOTE: This has been tested with python 3.13.9
+- NOTE: This has been tested with python 3.13 on Mac OS 15.6 and Ubuntu 24.04
 - Optional CONDA setup:
 
 ```
