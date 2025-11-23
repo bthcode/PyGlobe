@@ -71,6 +71,9 @@ class MainWindow(QWidget):
 
 
 if __name__ == '__main__':
+    # Create a diretory for tile caching
+    os.makedirs('cache', exist_ok=True)
+
     app = QApplication(sys.argv)
     window = MainWindow()
     

@@ -1,30 +1,32 @@
-# PyGlobe
+PyGlobe
+-------
 3D Globe in Python / Qt / OpenGL
 
 ![Screenshot](globe.png?raw=true "Example Screenshot")
 
 
-# Status
-This is just an idea, so far
+Status
+------
+- Basic functionality tested by exactly one user on one computer
 
-# Code Index
-- dynamic.py - main app, displays an opengl globe with map tiles
+Installation
+------------
+
+>> pip install -e .
+
+- NOTE: Will install pyside6, pyopengl, numpy, requests, pillow
+
+Usage
+-----
+
+>> cd example/
+>> python example.py
+
+Code Overview
+-------------
+
+- globe.py - Primary Widget
 - tile_fetcher.py - threaded qt clss for fetching tiles
-- obj_loader.py - load and manage scene objects
-- test_object_loading  - test code for loading and displaying models
-    - triangle : simple rotating triangle
-    - satellite : load and rotate a satellite model
-    - sample_object_project : models integrated into a project, satellites orbit earth
-
-# Prepreqs
-
-```
-conda create --name pyglobe pyside6
-conda activate pyglobe
-conda install requests numpy pyopengl pillow
-```
-
-# Run
-
-> python dynamic.py
+- scene.py - load and manage scene objects
+- coord_utils.py - Coordinate transform utilities
 
