@@ -1,59 +1,60 @@
-import sys
-import os
+# STDLIB Imports
 from collections import OrderedDict
 import numpy as np
+import sys
+import os
+
+# Pyside Imports
 from PySide6.QtWidgets import QApplication, QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QLabel
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
 from PySide6.QtCore import Qt, QTimer, QThread, Signal, Slot
 from PySide6.QtGui import QImage
+
+# OpenGL Imports
 from OpenGL.GL import *
 from OpenGL.GLU import *
 
-# Assume tile_fetcher.py is in the same directory
+# This Project Imports
 from pyglobe.tile_fetcher import TileFetcher
 from pyglobe.scene import *
 from pyglobe.coord_utils import *
+from pyglobe.tile_utils import latlon_to_tile, tile_y_to_lat
 
 class GlobeWidget(QOpenGLWidget):
+    '''PySide6 OpenGL Widget for displaying a 3D Globe'''
+
     # Signals for TileFetcher
     requestTile = Signal(int, int, int, str)
     setAimpoint = Signal(int, int, int)
     infoSig = Signal(dict)
     sigObjectClicked = Signal(SceneObject)
     
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, tile_cache_dir:str='cache'):
         super().__init__(parent)
         self.setMinimumSize(1000,600)
         self.camera_distance = 20000000  # 15,000 km from center
         self.camera_lon = 0.0  # degrees
         self.camera_lat = 0.0  # degrees
-        self.last_pos = None
-        self.debug = False
-        self.max_gpu_textures = 1024
+        self.last_pos = None # For mouse dragging
+        self.max_gpu_textures = 1024 # Max number of GPU textures to hold in memory
         
         # Earth radius in meters
         self.earth_radius = 6371000
         
         # Tile textures
         self.tile_textures = OrderedDict()
+        # Level 3 - Keep it separate so we always have it
         self.base_textures = OrderedDict()
-        self.tile_cache_path = "cache"
-        self.pending_tile_data = {}  # Tiles waiting to be uploaded to GPU
+        self.tile_cache_path = tile_cache_dir
+
         self.inflight_tiles = {}  # Tiles currently being fetched
+        self.pending_tile_data = {}  # Tiles waiting to be uploaded to GPU
         self.screen_tiles = {}  # Tiles that should be visible
         
         # OSM tile URL template
         self.tile_url_template = "https://tile.openstreetmap.org/{z}/{x}/{y}.png"
         
-        # Debug ray casting
-        self.debug_ray_origin = None
-        self.debug_ray_end = None
-        
-        # Tile update throttling
-        self.last_tile_request_time = 0
-        self.tile_request_cooldown = 200  # ms between tile requests
-
-        # Scene - this is what holds the stuff
+        # Scene contains objects to be drawn on the map
         self.scene = Scene()
         self.scene.sigClicked.connect(self.on_object_clicked)
         
@@ -122,30 +123,11 @@ class GlobeWidget(QOpenGLWidget):
         # Draw Earth at origin
         self.draw_earth()
         
-        if self.debug:
-            # Draw coordinate axes
-            self.draw_axes()
-            
-            # Debug: Draw ENU frame at a test location
-            self.draw_coordinate_frame(42.0, -71.0, 2000000)  # Boston area, 2000km altitude
-        
-        # Draw satellite with orientation in local ENU
-        # Orientation: (roll, pitch, yaw) in degrees in local ENU frame
-        if 0:
-            self.draw_satellite(self.satellite_lat, self.satellite_lon, self.satellite_alt, 
-                              roll=self.satellite_roll, pitch=self.satellite_pitch, yaw=self.satellite_yaw)
-        
-        # Draw debug ray if available
-        if self.debug:
-            if self.debug_ray_origin is not None and self.debug_ray_end is not None:
-                self.draw_debug_ray()
-
+        # Draw objects on the map        
         self.scene.draw()
 
-    def add_debug_objects(self)->None:
-        add_test_objects(self.scene)
-            
     def draw_earth(self):
+        '''Draw earth and tiles'''
         glPushMatrix()
         glColor3f(1.0, 1.0, 1.0)  # White to show texture colors
 
@@ -162,7 +144,10 @@ class GlobeWidget(QOpenGLWidget):
         glPopMatrix()
         
     
-    def calculate_zoom_level(self):
+    #------------------------------------------------
+    # Tile Handling
+    #------------------------------------------------
+    def calculate_zoom_level(self)->int:
         """Calculate appropriate zoom level based on camera distance"""
         altitude = self.camera_distance - self.earth_radius
         altitude_mm = altitude / 1e6
@@ -179,31 +164,24 @@ class GlobeWidget(QOpenGLWidget):
             return 7
         else:
             return 8
-    
-    def latlon_to_tile(self, lat, lon, zoom):
-        """Convert lat/lon to tile coordinates"""
-        n = 2 ** zoom
-        x = int((lon + 180.0) / 360.0 * n)
-        lat_rad = np.radians(lat)
-        y = int((1.0 - np.arcsinh(np.tan(lat_rad)) / np.pi) / 2.0 * n)
-        x = x % n
-        y = np.clip(y, 0, n - 1)
-        return x, y
+ 
+    def load_base_textures(self):
+        '''Ensure lowest level of map is always loaded'''
+        # Always draw level3
+        base_z = 3
+        n = 2**base_z
+        xs = np.arange(n)
+        ys = np.arange(n)
+        for x in xs:
+            for y in ys:
+                key = (base_z,int(x),int(y))
+                self.request_tile(key)
 
-    def publish_display_info(self)->None:
-        '''Emit debug info'''
-        self.infoSig.emit({'level' : self.zoom_level,
-                           'center_lla' : self.center_lla,
-                           'current_tile_x' : self.current_tile_x,
-                           'current_tile_y' : self.current_tile_y }
-                          )
-
-    
     def request_visible_tiles(self):
         """Request tiles that should be visible"""
         zoom = self.calculate_zoom_level()
         lat, lon = self.camera_lat, self.camera_lon
-        center_x, center_y = self.latlon_to_tile(lat, lon, zoom)
+        center_x, center_y = latlon_to_tile(lat, lon, zoom)
 
         self.zoom_level = zoom
         self.center_lla = {'lat' : lat, 'lon' : lon, 'alt' : 0}
@@ -235,20 +213,15 @@ class GlobeWidget(QOpenGLWidget):
                 if 0 <= y < n:
                     tile_key = (zoom, x, y)
                     new_screen_tiles[tile_key] = True
-                    
-                    # Request if not already loaded or in flight
-                    #if tile_key not in self.base_textures and tile_key not in self.tile_textures and tile_key not in self.inflight_tiles:
-                     #   self.inflight_tiles.add(tile_key)
-                    #    self.requestTile.emit(zoom, x, y, self.tile_url_template)
-        
                     self.request_tile((zoom,x,y))
         self.screen_tiles = new_screen_tiles
 
     def request_tile(self,key: [int,int,int])->None:
         '''If a tile is not already loaded, emit a request
-        Params
-        ------
+        Parameters
+        -----------
         key: (z,x,y)
+            TMS tile z,x,y
         '''
         if key in self.inflight_tiles: 
             return
@@ -258,15 +231,10 @@ class GlobeWidget(QOpenGLWidget):
             return
         if key in self.base_textures:
             return
-        #if key in self.pending_tiles:
-        #    return
         z,x,y = key
-        #if z<MIN_Z or z>MAX_Z: 
-        #    return
         self.inflight_tiles[key] = True
         self.requestTile.emit(z,x,y,self.tile_url_template)
 
-    
     @Slot(int, int, int, bytes)
     def on_tile_ready(self, z, x, y, data):
         """Called when TileFetcher has tile data ready"""
@@ -279,19 +247,6 @@ class GlobeWidget(QOpenGLWidget):
         self.pending_tile_data[tile_key] = data
         self.update()
 
-    def load_base_textures(self):
-        '''Ensure lowest level of map is always loaded'''
-        # Always draw level3
-        base_z = 3
-        n = 2**base_z
-        xs = np.arange(n)
-        ys = np.arange(n)
-        for x in xs:
-            for y in ys:
-                key = (base_z,int(x),int(y))
-                self.request_tile(key)
-
-    
     def upload_pending_tiles(self):
         """Upload pending tile data to GPU"""
         for (z, x, y), data in list(self.pending_tile_data.items()):
@@ -363,8 +318,8 @@ class GlobeWidget(QOpenGLWidget):
         lon_min = (x / n) * 360.0 - 180.0
         lon_max = ((x + 1) / n) * 360.0 - 180.0
         
-        lat_max = self.tile_y_to_lat(y, z)
-        lat_min = self.tile_y_to_lat(y + 1, z)
+        lat_max = tile_y_to_lat(y, z)
+        lat_min = tile_y_to_lat(y + 1, z)
         
         # Draw tile as a quad mesh on the sphere
         steps = 7  # subdivisions for better sphere approximation
@@ -402,118 +357,19 @@ class GlobeWidget(QOpenGLWidget):
         
         glEnd()
     
-    def tile_y_to_lat(self, y, zoom):
-        """Convert OSM tile Y coordinate to latitude"""
-        n = 2 ** zoom
-        lat_rad = np.arctan(np.sinh(np.pi * (1 - 2 * y / n)))
-        return np.degrees(lat_rad)
+
+    #-------------------------------------------------------
+    # EVENT HANDLERS
+    #-------------------------------------------------------
+    def publish_display_info(self)->None:
+        '''Emit debug info'''
+        self.infoSig.emit({'level' : self.zoom_level,
+                           'center_lla' : self.center_lla,
+                           'current_tile_x' : self.current_tile_x,
+                           'current_tile_y' : self.current_tile_y }
+                          )
 
 
-    #------------------ DEBUG FUNCTIONS ------------------#
-    def draw_axes(self):
-        glDisable(GL_LIGHTING)
-        glLineWidth(2.0)
-        
-        axis_length = self.earth_radius * 1.5
-        
-        glBegin(GL_LINES)
-        # X-axis (red)
-        glColor3f(1, 0, 0)
-        glVertex3f(0, 0, 0)
-        glVertex3f(axis_length, 0, 0)
-        
-        # Y-axis (green)
-        glColor3f(0, 1, 0)
-        glVertex3f(0, 0, 0)
-        glVertex3f(0, axis_length, 0)
-        
-        # Z-axis (blue)
-        glColor3f(0, 0, 1)
-        glVertex3f(0, 0, 0)
-        glVertex3f(0, 0, axis_length)
-        glEnd()
-        
-        glEnable(GL_LIGHTING)
-
-    def draw_coordinate_frame(self, lat, lon, alt):
-        """Draw ENU (East-North-Up) coordinate frame at specified location"""
-        # Get ECEF position
-        px, py, pz = lla_to_ecef(lat, lon, alt)
-        
-        # Calculate ENU basis vectors
-        lat_rad = np.radians(lat)
-        lon_rad = np.radians(lon)
-        
-        # East vector (tangent to latitude circle, pointing east)
-        east = np.array([
-            -np.sin(lon_rad),
-            np.cos(lon_rad),
-            0
-        ])
-        
-        # North vector (tangent to meridian, pointing north)
-        north = np.array([
-            -np.sin(lat_rad) * np.cos(lon_rad),
-            -np.sin(lat_rad) * np.sin(lon_rad),
-            np.cos(lat_rad)
-        ])
-        
-        # Up vector (radial, pointing away from Earth center)
-        up = np.array([
-            np.cos(lat_rad) * np.cos(lon_rad),
-            np.cos(lat_rad) * np.sin(lon_rad),
-            np.sin(lat_rad)
-        ])
-        
-        # Normalize (should already be normalized, but just to be safe)
-        east = east / np.linalg.norm(east)
-        north = north / np.linalg.norm(north)
-        up = up / np.linalg.norm(up)
-        
-        # Scale for visibility
-        axis_length = 500000  # 500 km
-        
-        glDisable(GL_LIGHTING)
-        glDisable(GL_TEXTURE_2D)
-        glLineWidth(3.0)
-        
-        glBegin(GL_LINES)
-        
-        # East axis (Red)
-        glColor3f(1, 0, 0)
-        glVertex3f(px, py, pz)
-        glVertex3f(px + east[0] * axis_length, 
-                   py + east[1] * axis_length, 
-                   pz + east[2] * axis_length)
-        
-        # North axis (Green)
-        glColor3f(0, 1, 0)
-        glVertex3f(px, py, pz)
-        glVertex3f(px + north[0] * axis_length, 
-                   py + north[1] * axis_length, 
-                   pz + north[2] * axis_length)
-        
-        # Up axis (Blue)
-        glColor3f(0, 0, 1)
-        glVertex3f(px, py, pz)
-        glVertex3f(px + up[0] * axis_length, 
-                   py + up[1] * axis_length, 
-                   pz + up[2] * axis_length)
-        
-        glEnd()
-        
-        # Draw a small sphere at the origin point
-        glColor3f(1, 1, 0)  # Yellow
-        glPushMatrix()
-        glTranslatef(px, py, pz)
-        quadric = gluNewQuadric()
-        gluSphere(quadric, 50000, 10, 10)  # 50km radius sphere
-        gluDeleteQuadric(quadric)
-        glPopMatrix()
-        
-        glEnable(GL_LIGHTING)
-        glEnable(GL_TEXTURE_2D)
-    
     def on_object_clicked(self, obj):
         self.sigObjectClicked.emit(obj)
 
@@ -584,6 +440,9 @@ class GlobeWidget(QOpenGLWidget):
             self.update()
 
     
+    #------------------------------------------------------
+    # OBJECT PICKING
+    #------------------------------------------------------
     def mouse_to_ray(self, mouse_x, mouse_y):
         """
         Convert mouse coordinates to a ray in ECEF space.
@@ -607,19 +466,9 @@ class GlobeWidget(QOpenGLWidget):
         mx = mouse_x * dpr
         my = mouse_y * dpr
 
-        if self.debug:
-            print(f"Mouse: ({mouse_x}, {mouse_y})")
-            print(f"Widget size: {widget_w} x {widget_h}")
-            print(f"DPR: {dpr}")
-            print(f"Effective size: {w} x {h}")
-            print(f"Scaled mouse: ({mx}, {my})")
-
         # Convert to NDC using widget dimensions
         ndc_x = (2.0 * mx) / w - 1.0
         ndc_y = 1.0 - (2.0 * my) / h
-
-        if self.debug:
-            print(f"NDC: ({ndc_x:.3f}, {ndc_y:.3f})")
 
         # Get camera position in ECEF
         cam_x, cam_y, cam_z = spherical_to_ecef(
@@ -667,101 +516,4 @@ class GlobeWidget(QOpenGLWidget):
 
         return cam_pos, ray_dir_world
 
-    def draw_debug_ray(self):
-        """Draw the last cast ray for debugging"""
-        if self.debug_ray_origin is None or self.debug_ray_end is None:
-            return
-        
-        print(f"Drawing debug ray from {self.debug_ray_origin/1e6} to {self.debug_ray_end/1e6} Mm")
-            
-        glDisable(GL_LIGHTING)
-        glDisable(GL_TEXTURE_2D)
-        glDisable(GL_DEPTH_TEST)
-        glLineWidth(5.0)
-        
-        glBegin(GL_LINES)
-        glColor3f(1, 1, 0)  # Yellow
-        glVertex3f(self.debug_ray_origin[0], self.debug_ray_origin[1], self.debug_ray_origin[2])
-        glVertex3f(self.debug_ray_end[0], self.debug_ray_end[1], self.debug_ray_end[2])
-        glEnd()
-        
-        # Camera marker
-        glColor3f(0, 1, 1)  # Cyan
-        glPushMatrix()
-        glTranslatef(self.debug_ray_origin[0], self.debug_ray_origin[1], self.debug_ray_origin[2])
-        quadric = gluNewQuadric()
-        gluSphere(quadric, 50000, 10, 10)
-        gluDeleteQuadric(quadric)
-        glPopMatrix()
-        
-        # Draw a magenta sphere at ray end for debugging
-        glColor3f(1, 0, 1)  # Magenta
-        glPushMatrix()
-        glTranslatef(self.debug_ray_end[0], self.debug_ray_end[1], self.debug_ray_end[2])
-        quadric = gluNewQuadric()
-        gluSphere(quadric, 100000, 10, 10)
-        gluDeleteQuadric(quadric)
-        glPopMatrix()
-        
-        glEnable(GL_DEPTH_TEST)
-        glEnable(GL_LIGHTING)
-        glEnable(GL_TEXTURE_2D)
-
-class MainWindow(QWidget):
-    startFetcher = Signal()
-    
-    def __init__(self):
-        super().__init__()
-        self.setWindowTitle("PySide6 OpenGL 3D Globe (ECEF)")
-        #self.setGeometry(100, 100, 1024, 768)
-        hbox = QHBoxLayout()
-        vbox = QVBoxLayout()
-
-        self.text = QLabel('Label')
-        vbox.addWidget(self.text)
-        # TODO - adding this column throws off the raycasting calcs
-        hbox.addLayout(vbox)
-        self.globe = GlobeWidget(self)
-        hbox.addWidget(self.globe)
-        self.globe.infoSig.connect(self.on_window)
-        self.setLayout(hbox)
-
-        # Set up TileFetcher in separate thread
-        self.fetcher_thread = QThread()
-        self.fetcher = TileFetcher(cache_dir="cache")
-        self.fetcher.moveToThread(self.fetcher_thread)
-        
-        # Connect signals
-        self.startFetcher.connect(self.fetcher.start)
-        self.globe.requestTile.connect(self.fetcher.requestTile)
-        self.globe.setAimpoint.connect(self.fetcher.setAimpoint)
-        self.fetcher.tileReady.connect(self.globe.on_tile_ready)
-        
-        # Start fetcher thread
-        self.fetcher_thread.start()
-        self.startFetcher.emit()
-        
-    def on_window(self, info_dict: dict):
-        s =  f"Level:    {info_dict['level']}\n"
-        s += f"Tile X:   {info_dict['current_tile_x']}\n"
-        s += f"Tile Y:   {info_dict['current_tile_y']}\n\n"
-
-        s += f"Lat:      {info_dict['center_lla']['lat']:.2f}\n"
-        s += f"Lon:      {info_dict['center_lla']['lon']:.2f}\n"
-        s += f"Alt:      {info_dict['center_lla']['alt']:.2f}\n\n"
-
-
-        self.text.setText(s)
-
-
-if __name__ == '__main__':
-    app = QApplication(sys.argv)
-    window = MainWindow()
-    
-    # Cleanup on exit
-    app.aboutToQuit.connect(window.fetcher.shutdown)
-    app.aboutToQuit.connect(window.fetcher_thread.quit)
-    app.aboutToQuit.connect(window.fetcher_thread.wait)
-    window.resize(1200,800) 
-    window.show()
-    sys.exit(app.exec())
+# end class GlobeWidget
