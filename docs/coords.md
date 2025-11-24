@@ -6,18 +6,19 @@
 
 # **1. Overview of Coordinate Systems**
 
-The PyGlobe rendering pipeline uses four major coordinate systems:
+Coordinate systems used in this widget:
 
 1. **Geographic (WGS84)** – latitude, longitude, altitude
 2. **ECEF (Earth-Centered Earth-Fixed)** – 3D Cartesian
 3. **View / Camera Space** – created via `gluLookAt`
 4. **Screen Space (NDC + pixel coordinates)** – post-projection
+5. **TMS Tile Space** - Map tiles 
 
 ```
-WGS84 → ECEF → View Space → Clip → NDC → Screen
+WGS84 -> ECEF -> View Space -> Clip -> NDC -> Screen
 ```
 
-Each system is optimized for a specific part of the rendering or interaction workflow.
+- A good reference for OpenGL coordinate systems: [OpenGL Coordinates](https://learnopengl.com/Getting-started/Coordinate-Systems)
 
 ---
 
@@ -47,13 +48,8 @@ A 3D Cartesian coordinate system:
 * +Y axis at longitude +90°
 
 Units: **meters**
-
-This coordinate system is ideal for:
-
-* Rendering the globe
-* Intersection tests
-* Camera transformations
-* All OpenGL "world space" operations
+ 
+The globe and scene objects are stored in ECEF.
 
 ---
 
@@ -86,7 +82,7 @@ y = r * cos(lat) * sin(lon)
 z = r * sin(lat)
 ```
 
-Where **r = distance from Earth center**, not from surface.
+Where **r = distance from Earth center**.
 
 ---
 
@@ -108,20 +104,14 @@ Camera orientation:
 * Right = +X
 * Up = +Y
 
-This simplifies:
-
-* Ray casting
-* Mouse interactions
-* Deterministic camera behavior
-
 ---
 
 # **5. Screen Space**
 
 After projection (via `gluPerspective`):
 
-* Clip Space → Normalized Device Coordinates (NDC)
-* NDC → Pixel coordinates
+* Clip Space: Normalized Device Coordinates (NDC)
+* NDC: Pixel coordinates
 
 Ranges:
 
@@ -136,7 +126,7 @@ Ranges:
 The path for mouse picking:
 
 ```
-Screen → NDC → Camera Space Ray → ECEF Ray
+Screen -> NDC -> Camera Space Ray -> ECEF Ray
 ```
 
 ### **mouse_to_ray(mouse_x, mouse_y)**
@@ -187,11 +177,7 @@ Used for:
 
 The ENU frame (East-North-Up) is a local tangent plane at a specific point on Earth.
 
-This coordinate system is essential for:
-
-* Satellite attitudes
-* Placing local objects
-* Orientation relative to surface
+* Used for orienting objects relative to surface
 
 ## **7.1 Basis Vectors (in ECEF)**
 
@@ -210,13 +196,13 @@ ecef_vec = R @ enu_vec
 
 Columns of R:
 
-* Column 0 → East
-* Column 1 → North
-* Column 2 → Up
+* Column 0: East
+* Column 1: North
+* Column 2: Up
 
 ---
 
-# **8. Key Constants & Parameters**
+# **8. Constants & Parameters**
 
 ### **Earth Model**
 
@@ -226,7 +212,7 @@ Columns of R:
 ### **Camera**
 
 * Default distance ≈ 20,000,000 m
-* FOV = 45°
+* FOV = 45 degreees
 * Near = 100 km
 * Far = 50,000 km
 
@@ -234,20 +220,18 @@ Columns of R:
 
 * TMS / OSM format
 * Zoom levels 3–8
-* Web Mercator projection
-* Subdivided into 7×7 quads
 
 ---
 
 # **9. Visual Reference Diagrams**
 
-Two diagrams (from your TSX file) illustrate:
+![PyGlobe Coordinates](./assets/images/view_geometry.png)
 
 ## **9.1 ECEF Axes**
 
-* +X → Longitude 0°
-* +Y → Longitude +90°
-* +Z → North pole
+* +X: Longitude 0°
+* +Y: Longitude +90°
+* +Z: North pole
 * Earth centered
 
 ## **9.2 Camera View Geometry**
@@ -258,14 +242,14 @@ Two diagrams (from your TSX file) illustrate:
 
 ---
 
-# **10. Complete Pipeline Summary**
+# **10. Pipeline Summary**
 
 ## **Rendering Pipeline**
 
 1. Define geometry in **lat/lon/alt**
 2. Convert to **ECEF**
-3. Apply **ModelView** transforms → View Space
-4. Apply **Projection** → NDC → Screen
+3. Apply **ModelView** transforms -> View Space
+4. Apply **Projection** -> NDC -> Screen
 
 ## **User Interaction Pipeline**
 
