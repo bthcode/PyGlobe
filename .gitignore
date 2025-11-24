@@ -4,8 +4,9 @@ __pycache__/
 *$py.class
 
 # Tile cache
-cache/
+*cache/
 *_cache/
+.DS_Store/
 
 # C extensions
 *.so
