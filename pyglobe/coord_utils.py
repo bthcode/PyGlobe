@@ -1,11 +1,26 @@
-import sys
-import os
-from collections import OrderedDict
 import numpy as np
 
-def spherical_to_ecef(lat, lon, r):
+def spherical_to_ecef(lat:float, lon:float, r:float) -> [float,float,float]:
     """Convert spherical coordinates to ECEF
-    r is distance from Earth center (for camera positioning)"""
+
+    Parameters
+    ----------
+    lat : float
+        Latitude in WGS84 degrees
+    lon : float
+        Longitude in WG84 degrees
+    r : float
+        Distance from Earth center
+
+    Returns
+    -------
+    x : float
+        ECEF x
+    y : float
+        ECEF y
+    z : float
+        ECEF z
+    """
     lat_rad = np.radians(lat)
     lon_rad = np.radians(lon)
     
@@ -15,9 +30,27 @@ def spherical_to_ecef(lat, lon, r):
     
     return x, y, z
 
-def lla_to_ecef(lat, lon, alt):
+def lla_to_ecef(lat: float, lon: float, alt: float) -> [float,float,float]:
     """Convert latitude, longitude, altitude to ECEF coordinates
-    alt is height above Earth surface (not distance from center)"""
+
+    Parameters
+    ----------
+    lat : float
+        Latitude in WGS84 Degrees
+    lon : float
+        Longitude in WGS84 Degrees
+    alt : float
+        Altitude above earth surface in meters
+
+    Returns
+    -------
+    x : float
+        ECEF x
+    y : float
+        ECEF y
+    z : float
+        ECEF z
+    """
 
     earth_radius = 6371000
     lat_rad = np.radians(lat)
@@ -32,8 +65,21 @@ def lla_to_ecef(lat, lon, alt):
     
     return x, y, z
 
-def get_enu_to_ecef_matrix(lat, lon):
-    """Get rotation matrix from local ENU to ECEF frame"""
+def get_enu_to_ecef_matrix(lat: float, lon: float) -> np.ndarray:
+    """Get rotation matrix from local ENU to ECEF frame
+
+    Parameters
+    ----------
+    lat : float
+        Latitude in WGS84 Degrees
+    lon : float
+        Longitude in WGS84 Degrees
+
+    Returns
+    -------
+    R : np.ndarray
+        3x3 Rotation Matrix
+    """
     lat_rad = np.radians(lat)
     lon_rad = np.radians(lon)
     
