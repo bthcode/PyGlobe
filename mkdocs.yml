@@ -5,6 +5,7 @@ site_author: Bran Hone
 nav:
   - Home: 'index.md'
   - API Reference: 'api-reference.md'
+  - Coordinate Reference: 'coords.md'
 #  - User Guide: 'user-guide.md'
 #  - About: 'about.md'
 
