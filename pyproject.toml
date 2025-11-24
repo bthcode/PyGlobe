@@ -5,6 +5,12 @@ description = "PySide6 OpenGL Globe Widget"
 authors = [
     { name = "Brian Hone" },
 ]
+requires-python = ">=3.11"
+readme = "README.md"
+license = { text = "MIT License" }
+keywords = ["pyside6", "python", "opengl"]
+
+
 dependencies = [
     "PySide6",
     "PyOpenGL",
@@ -13,10 +19,13 @@ dependencies = [
     "pillow",
     "numpy",
 ]
-requires-python = ">=3.8"
-readme = "README.md"
-license = { text = "MIT License" }
-keywords = ["pyside6", "python", "opengl"]
+
+[project.optional-dependencies]
+docs = [
+    "mkdocs",
+    "pymdown-extensions"
+]
+
 
 [project.urls]
 Homepage = "https://github.com/bthcode/PyGlobe"
