@@ -3,13 +3,13 @@ from OpenGL.GLU import *
 from PySide6.QtCore import QObject, Signal
 import numpy as np
 import os
-from pyglobe.coord_utils import lla_to_ecef, spherical_to_ecef, get_enu_to_ecef_matrix
+from pyglobe.coord_utils import lla_to_ecef, get_enu_to_ecef_matrix
 from contextlib import contextmanager
 
 
 @contextmanager
-def gl_state_guard():
-    """Context manager to save/restore OpenGL state"""
+def gl_state_guard() -> None:
+    """Context manager to save/restore OpenGL state when drawing scene objects"""
     depth_test = glIsEnabled(GL_DEPTH_TEST)
     lighting = glIsEnabled(GL_LIGHTING)
     texture_2d = glIsEnabled(GL_TEXTURE_2D)
@@ -20,48 +20,63 @@ def gl_state_guard():
     try:
         yield
     finally:
-        if depth_test: glEnable(GL_DEPTH_TEST)
-        else: glDisable(GL_DEPTH_TEST)
-        if lighting: glEnable(GL_LIGHTING)
-        else: glDisable(GL_LIGHTING)
-        if texture_2d: glEnable(GL_TEXTURE_2D)
-        else: glDisable(GL_TEXTURE_2D)
-        if blend: glEnable(GL_BLEND)
-        else: glDisable(GL_BLEND)
+        if depth_test: 
+            glEnable(GL_DEPTH_TEST)
+        else: 
+            glDisable(GL_DEPTH_TEST)
+        if lighting: 
+            glEnable(GL_LIGHTING)
+        else: 
+            glDisable(GL_LIGHTING)
+        if texture_2d: 
+            glEnable(GL_TEXTURE_2D)
+        else: 
+            glDisable(GL_TEXTURE_2D)
+        if blend: 
+            glEnable(GL_BLEND)
+        else: 
+            glDisable(GL_BLEND)
         glLineWidth(float(line_width))
         glColor4fv(color)
 
 
-# =============================================================================
-# Base Scene Object
-# =============================================================================
-
 class SceneObject:
-    """Base class for all scene objects"""
+    """Base class for all scene objects
     
-    def draw(self):
+    Attributes
+    ----------
+    label : str
+        Name for this object
+
+    """
+
+    def __init__(self, label):
+        self.label = label
+    
+    def draw(self) -> None:
         """Draw this object"""
         raise NotImplementedError
     
-    def intersect_ray(self, ray_origin, ray_direction):
+    def intersect_ray(self, ray_origin: np.ndarray, ray_direction:np.ndarray) -> float | None:
         """
         Test if ray intersects this object.
         
-        Parameters:
-            ray_origin: numpy array [x, y, z] in ECEF (meters)
-            ray_direction: normalized numpy array [x, y, z] in ECEF
+        Parameters
+        ----------
+            ray_origin: np.ndarray
+                numpy array [x, y, z] in ECEF (meters)
+            ray_direction: np.ndarray
+                normalized numpy array [x, y, z] in ECEF
             
-        Returns:
-            distance (float) if hit, None if miss
+        Returns
+        -------
+            distance: float | None
+                if hit, None if miss
         """
         raise NotImplementedError
     
-    def on_click(self):
-        """Called when object is clicked"""
-        print(f"{self.__class__.__name__} clicked")
-    
     def __str__(self):
-        return self.__class__.__name__
+        return f'{self.__class__.__name__} : {self.label}'
 
 
 # =============================================================================
@@ -71,9 +86,34 @@ class SceneObject:
 class SceneModel(SceneObject):
     """3D model loaded from OBJ file, positioned at lat/lon/alt with ENU orientation"""
     
-    def __init__(self, label, lat_deg, lon_deg, alt_m, scale, obj_path, roll=0, pitch=0, yaw=0, pick_radius=200000):
-        super().__init__()
-        self.label = label
+    def __init__(self, label : str, lat_deg : float, lon_deg: float, alt_m: float, 
+                 scale: float|int, obj_path:str, roll:float=0, pitch:float=0, yaw:float=0, 
+                 pick_radius:float|int=200000):
+        '''
+        Parameters
+        ----------
+        label : str
+            name for this object
+        lat_deg : float
+            WGS84 latitude
+        lon_deg : float
+            WGS84 longitude
+        alt_m : float
+            WGS84 altitude
+        scale : float
+            scaling factor visualization size
+        obj_path : str
+            Path to mesh .obj file
+        roll : float 
+            Degrees of rotation around east in local ENU
+        pitch : float
+            Degrees of rotation around north in local ENU
+        yaw : float
+            Degrees of rotation around up in local ENU
+        pick_radius: float
+            Distance around object that will return a successful mouse click
+        '''
+        super().__init__(label)
         self.lat = lat_deg
         self.lon = lon_deg
         self.alt = alt_m
@@ -89,8 +129,14 @@ class SceneModel(SceneObject):
         # Load mesh
         self.mesh = self._load_obj(obj_path)
     
-    def _load_obj(self, obj_path):
-        """Load OBJ file"""
+    def _load_obj(self, obj_path:str) ->None:
+        """Load OBJ file
+        
+        Parameters
+        ----------
+        obj_path : str
+            Path to .obj file
+        """
         vertices = []
         faces = []
         
@@ -113,8 +159,23 @@ class SceneModel(SceneObject):
             print(f"Error loading mesh: {e}")
             return None
     
-    def intersect_ray(self, ray_origin, ray_direction):
-        """Ray-sphere intersection for picking"""
+    def intersect_ray(self, ray_origin:np.ndarray, ray_direction:np.ndarray) -> float | None:
+        """
+        Test if ray intersects this object.
+        
+        Parameters
+        ----------
+            ray_origin: np.ndarray
+                numpy array [x, y, z] in ECEF (meters)
+            ray_direction: np.ndarray
+                normalized numpy array [x, y, z] in ECEF
+            
+        Returns
+        -------
+            distance: float | None
+                if hit, None if miss
+        """
+
         oc = ray_origin - self.ecef_pos
         a = np.dot(ray_direction, ray_direction)
         b = 2.0 * np.dot(oc, ray_direction)
@@ -193,9 +254,28 @@ class SceneModel(SceneObject):
 class PointSceneObject(SceneObject):
     """Single point marker"""
     
-    def __init__(self, label, lat, lon, alt=0.0, color=(1.0, 0.0, 0.0), size=15.0, pick_radius=50000):
-        super().__init__()
-        self.label = label
+    def __init__(self, label:str, lat:float, lon:float, alt:float=0.0, 
+                 color=(1.0, 0.0, 0.0), size:float=15.0, pick_radius=50000):
+        '''
+        Parameters
+        ----------
+        label : str
+            Name of this object
+        lat : float
+            Latitude WGS84 degrees
+        lon : float
+            Longitude WGS84 degrees
+        alt : float
+            Altitude WGS84 meters
+        color : [float,float,float]
+            Color (0:1, 0:1, 0:1)
+        size : float
+            Size to draw the point
+        pick_radius : number
+            Meters within which a click is 'successful'
+        '''
+
+        super().__init__(label)
         self.lat = lat
         self.lon = lon
         self.alt = alt
@@ -204,7 +284,8 @@ class PointSceneObject(SceneObject):
         self.pick_radius = pick_radius
         self.xyz = np.array(lla_to_ecef(lat, lon, alt))
     
-    def draw(self):
+    def draw(self) -> None:
+        '''Drow this object in OpenGL'''
         with gl_state_guard():
             glDisable(GL_LIGHTING)
             glDisable(GL_TEXTURE_2D)
@@ -215,8 +296,23 @@ class PointSceneObject(SceneObject):
             glVertex3f(*self.xyz)
             glEnd()
     
-    def intersect_ray(self, ray_origin, ray_direction):
-        """Ray-sphere intersection"""
+    def intersect_ray(self, ray_origin:np.ndarray, ray_direction:np.ndarray) -> float | None:
+        """
+        Test if ray intersects this object.
+        
+        Parameters
+        ----------
+            ray_origin: np.ndarray
+                numpy array [x, y, z] in ECEF (meters)
+            ray_direction: np.ndarray
+                normalized numpy array [x, y, z] in ECEF
+            
+        Returns
+        -------
+            distance: float | None
+                if hit, None if miss
+        """
+
         oc = ray_origin - self.xyz
         a = np.dot(ray_direction, ray_direction)
         b = 2.0 * np.dot(oc, ray_direction)
@@ -237,10 +333,28 @@ class PointSceneObject(SceneObject):
 class PolyLineSceneObject(SceneObject):
     """Connected line segments"""
     
-    def __init__(self, label, points_wgs84, color=(1.0, 1.0, 0.0), width=4.0, 
-                 altitude_offset=0.0, pick_radius=25000):
-        super().__init__()
-        self.label = label
+    def __init__(self, label:str, points_wgs84, color=(1.0, 1.0, 0.0), width:float=4.0, 
+                 altitude_offset:float=0.0, pick_radius=25000):
+        '''
+        Parameters
+        ----------
+        label : str
+            Name of this object
+        points_wgs84 : iterable[float]
+            Set of points making up this polygon
+        color : [float,float,float]
+            Color of outline of circle
+        fill_color : None | [float,float,float]
+            Color of center of circle (optional)
+        width : float
+            Width of outline of circcle
+        altitude_offset : float
+            Distance above the surface of the earth to draw this object
+        pick_radius : int | float
+            Area around object that is considered a successful 'click' on it
+        '''
+
+        super().__init__(label)
         self.points_wgs84 = points_wgs84
         self.color = color
         self.width = width
@@ -269,8 +383,22 @@ class PolyLineSceneObject(SceneObject):
             
             glDisable(GL_POLYGON_OFFSET_LINE)
     
-    def intersect_ray(self, ray_origin, ray_direction):
-        """Ray-cylinder intersection for each line segment"""
+    def intersect_ray(self, ray_origin:np.ndarray, ray_direction:np.ndarray)->float | None:
+        """
+        Test if ray intersects this object.
+        
+        Parameters
+        ----------
+            ray_origin: np.ndarray
+                numpy array [x, y, z] in ECEF (meters)
+            ray_direction: np.ndarray
+                normalized numpy array [x, y, z] in ECEF
+            
+        Returns
+        -------
+            distance: float | None
+                if hit, None if miss
+        """
         min_dist = None
         
         for i in range(len(self.points_xyz) - 1):
@@ -325,10 +453,32 @@ class PolyLineSceneObject(SceneObject):
 class CircleSceneObject(SceneObject):
     """Circle on the ground"""
     
-    def __init__(self, label, center_lat, center_lon, radius_meters, 
-                 color=(0.0, 1.0, 0.0), fill_color=None, width=2.0, num_points=64, altitude_offset=10.0):
-        super().__init__()
-        self.label = label
+    def __init__(self, label:str, center_lat:float, center_lon:float, radius_meters:float, 
+                 color=(0.0, 1.0, 0.0), fill_color=None, width:float=2.0, num_points:int=64, 
+                 altitude_offset:float=10.0):
+        '''
+        Parameters
+        ----------
+        label : str
+            Name of this object
+        center_lat : float
+            Latitude of circle center in WGS84 Degrees
+        center_lon : float
+            Longitude of circle center in WGS84 Degrees
+        radius_meters : float
+            Radius of circle in meters
+        color : [float,float,float]
+            Color of outline of circle
+        fill_color : None | [float,float,float]
+            Color of center of circle (optional)
+        width : float
+            Width of outline of circcle
+        num_points : int
+            Number of points to use for approximating the circle
+        altitude_offset : float
+            Distance above the surface of the earth to draw this object
+        '''
+        super().__init__(float)
         self.center_lat = center_lat
         self.center_lon = center_lon
         self.radius_meters = radius_meters
@@ -390,8 +540,23 @@ class CircleSceneObject(SceneObject):
             
             glDisable(GL_POLYGON_OFFSET_LINE)
     
-    def intersect_ray(self, ray_origin, ray_direction):
-        """Approximate as sphere for picking"""
+    def intersect_ray(self, ray_origin:np.ndarray, ray_direction:np.ndarray) -> np.ndarray | None:
+        """
+        Test if ray intersects this object.
+        
+        Parameters
+        ----------
+            ray_origin: np.ndarray
+                numpy array [x, y, z] in ECEF (meters)
+            ray_direction: np.ndarray
+                normalized numpy array [x, y, z] in ECEF
+            
+        Returns
+        -------
+            distance: float | None
+                if hit, None if miss
+        """
+
         oc = ray_origin - self.center_xyz
         a = np.dot(ray_direction, ray_direction)
         b = 2.0 * np.dot(oc, ray_direction)
@@ -412,10 +577,28 @@ class CircleSceneObject(SceneObject):
 class PolygonSceneObject(SceneObject):
     """Polygon on the ground defined by corner points"""
     
-    def __init__(self, label, points_wgs84, color=(1.0, 0.5, 0.0), fill_color=None, 
-                 width=2.0, altitude_offset=10.0, alpha=0.5):
-        super().__init__()
-        self.label = label
+    def __init__(self, label:str, points_wgs84, color:[float,float,float]=(1.0, 0.5, 0.0), 
+                 fill_color=None, 
+                 width:float=2.0, altitude_offset:float=10.0, alpha:float=0.5):
+        '''
+        Parameters
+        ----------
+        label : str
+            Name of this object
+        points_wgs84 : iterable[float]
+            Set of points making up this polygon
+        color : [float,float,float]
+            Color of outline of circle
+        fill_color : None | [float,float,float]
+            Color of center of circle (optional)
+        width : float
+            Width of outline of circcle
+        altitude_offset : float
+            Distance above the surface of the earth to draw this object
+        alpha : float
+            Transparency of this polygon (0=totally transparent, 1=not transparent)
+        '''
+        super().__init__(label)
         self.points_wgs84 = points_wgs84
         self.color = color
         self.fill_color = fill_color if fill_color else (*color, alpha)
@@ -430,7 +613,8 @@ class PolygonSceneObject(SceneObject):
         self.center_xyz = np.mean(self.points_xyz, axis=0)
         self.bounding_radius = max([np.linalg.norm(p - self.center_xyz) for p in self.points_xyz])
     
-    def draw(self):
+    def draw(self) -> None:
+        '''OpenGL Drawing Function for this object'''
         with gl_state_guard():
             glDisable(GL_LIGHTING)
             glDisable(GL_TEXTURE_2D)
@@ -461,9 +645,23 @@ class PolygonSceneObject(SceneObject):
             glEnd()
             
             glDisable(GL_POLYGON_OFFSET_FILL)
-    
-    def intersect_ray(self, ray_origin, ray_direction):
-        """Approximate as sphere for picking"""
+
+    def intersect_ray(self, ray_origin:np.ndarray, ray_direction:np.ndarray) -> np.ndarray | None:
+        """
+        Test if ray intersects this object.
+        
+        Parameters
+        ----------
+            ray_origin: np.ndarray
+                numpy array [x, y, z] in ECEF (meters)
+            ray_direction: np.ndarray
+                normalized numpy array [x, y, z] in ECEF
+            
+        Returns
+        -------
+            distance: float | None
+                if hit, None if miss
+        """
         oc = ray_origin - self.center_xyz
         a = np.dot(ray_direction, ray_direction)
         b = 2.0 * np.dot(oc, ray_direction)
@@ -484,13 +682,21 @@ class PolygonSceneObject(SceneObject):
 class ImageOverlaySceneObject(SceneObject):
     """Textured image on the ground with 4 corner points"""
     
-    def __init__(self, label, corners_wgs84, image_path, altitude_offset=10.0, alpha=1.0):
+    def __init__(self, label : str, corners_wgs84, image_path:str, altitude_offset:float=10.0, alpha:float=1.0):
         """
-        corners_wgs84: list of 4 tuples [(lat, lon, alt), ...] in order: 
-                       bottom-left, bottom-right, top-right, top-left
+        label : str
+            name for this object
+        corners_wgs84: tuple
+            list of 4 tuples [(lat, lon, alt), ...] in order: 
+            bottom-left, bottom-right, top-right, top-left
+        image_path : str
+            path to image to load
+        altitude_offset : float
+            distance above the earth's surface to draw image
+        alpha : float
+            transparancy to apply.  0 = fully transparnt, 1=not transparent
         """
-        super().__init__()
-        self.label = label
+        super().__init__(label)
         self.corners_wgs84 = corners_wgs84
         self.image_path = image_path
         self.altitude_offset = altitude_offset
@@ -505,8 +711,6 @@ class ImageOverlaySceneObject(SceneObject):
         self.center_xyz = np.mean(self.corners_xyz, axis=0)
         self.bounding_radius = max([np.linalg.norm(p - self.center_xyz) for p in self.corners_xyz])
         
-        #self._load_texture()
-    
     def _load_texture(self):
         """Load image as OpenGL texture"""
         if not os.path.exists(self.image_path):
@@ -533,7 +737,7 @@ class ImageOverlaySceneObject(SceneObject):
                     0, GL_RGBA, GL_UNSIGNED_BYTE, image.bits())
         glBindTexture(GL_TEXTURE_2D, 0)
     
-    def draw(self):
+    def draw(self) -> None:
         if not self.texture_id:
             self._load_texture()
         if not self.texture_id:
@@ -562,9 +766,23 @@ class ImageOverlaySceneObject(SceneObject):
             
             glDisable(GL_POLYGON_OFFSET_FILL)
             glBindTexture(GL_TEXTURE_2D, 0)
-    
-    def intersect_ray(self, ray_origin, ray_direction):
-        """Approximate as sphere for picking"""
+
+    def intersect_ray(self, ray_origin:np.ndarray, ray_direction:np.ndarray) -> np.ndarray | None:
+        """
+        Test if ray intersects this object.
+        
+        Parameters
+        ----------
+            ray_origin: np.ndarray
+                numpy array [x, y, z] in ECEF (meters)
+            ray_direction: np.ndarray
+                normalized numpy array [x, y, z] in ECEF
+            
+        Returns
+        -------
+            distance: float | None
+                if hit, None if miss
+        """
         oc = ray_origin - self.center_xyz
         a = np.dot(ray_direction, ray_direction)
         b = 2.0 * np.dot(oc, ray_direction)
