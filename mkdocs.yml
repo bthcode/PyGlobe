@@ -1,7 +1,6 @@
-site_name: My Awesome Project
-site_description: Documentation for My Awesome Project
-site_author: John Doe
-site_url: https://example.com/my-project/
+site_name: PyGlobe
+site_description: PySide6 ObenGL Globe Widget
+site_author: Bran Hone
 
 nav:
   - Home: 'index.md'
