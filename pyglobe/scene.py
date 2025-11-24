@@ -478,7 +478,7 @@ class CircleSceneObject(SceneObject):
         altitude_offset : float
             Distance above the surface of the earth to draw this object
         '''
-        super().__init__(float)
+        super().__init__(label)
         self.center_lat = center_lat
         self.center_lon = center_lon
         self.radius_meters = radius_meters
