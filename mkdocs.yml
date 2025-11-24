@@ -5,8 +5,8 @@ site_url: https://example.com/my-project/
 
 nav:
   - Home: 'index.md'
+  - API Reference: 'api-reference.md'
 #  - User Guide: 'user-guide.md'
-#  - API Reference: 'api-reference.md'
 #  - About: 'about.md'
 
 theme:
