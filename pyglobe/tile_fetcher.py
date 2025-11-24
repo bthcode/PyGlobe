@@ -15,7 +15,7 @@ from PySide6.QtNetwork import QNetworkAccessManager, QNetworkRequest, QNetworkRe
 # ---------------------------------------------------------------------------
 
 class TileFetcher(QObject):
-    '''TMS tile retreiver 
+    '''TMS caching tile retreiver 
 
     Remarks
     -------
@@ -25,9 +25,15 @@ class TileFetcher(QObject):
     - Emits tileReady when a tile is loaded
     '''
 
-    tileReady = Signal(int, int, int, bytes)  # z, x, y, image data
+    tileReady = Signal(int, int, int, bytes)
 
-    def __init__(self, cache_dir="cache", parent=None):
+    def __init__(self, cache_dir:str = "cache", parent=None):
+        '''
+        Parameters
+        ----------
+        cache_dir : str 
+            Path to a directory for tile storage
+        '''
         super().__init__(parent)
         self.cache_dir = cache_dir
         os.makedirs(self.cache_dir, exist_ok=True)
@@ -41,11 +47,9 @@ class TileFetcher(QObject):
 
         self.user_agent = b"Mozilla/5.0 (TileFetcher PyQt Example)"
 
-    # ------------------------ slots (thread-safe) ------------------------
-
     @Slot()
     def start(self)->None:
-        print ("----------> START <--------------")
+        '''Initializes child objects, including dispatch timer and NetworkAccessManager'''
         self.timer = QTimer(self)
         self.timer.timeout.connect(self._dispatch_next)
         self.timer.start(50)  # regulate requests
@@ -63,7 +67,18 @@ class TileFetcher(QObject):
 
     @Slot(int, int, int)
     def setAimpoint(self, zoom:int, x:int, y:int) -> None:
-        """Set the current aimpoint (center tile)."""
+        """Set the current aimpoint (center tile) for download prioritization.
+
+        Parameters
+        ----------
+        zoom : int
+            TMS Zoom level
+        x : int
+            TMS x
+        y : int
+            TMS y
+
+        """
         self.aimpoint = (zoom, x, y)
         # reprioritize queue
         self.pending.sort(key=lambda item: self._tile_distance(item, self.aimpoint))
@@ -78,10 +93,21 @@ class TileFetcher(QObject):
         self.requested.clear()
 
     @Slot(int, int, int, str)
-    def requestTile(self, z, x, y, url_template):
-        """Queue or start a tile request."""
+    def requestTile(self, z:int, x:int, y:int, url_template:str) -> None:
+        """Queue or start a tile request.
+
+        Parameters
+        ----------
+        z : int
+            TMS z
+        x : int
+            TMS x
+        y : int
+            TMS y
+        url_template : str
+            URL to download tiles from
+        """
         cache_path = os.path.join(self.cache_dir, str(z), str(x), f"{y}.png")
-        #print (f"requested {cache_path}")
 
         # already on disk?
         if os.path.exists(cache_path):
@@ -99,9 +125,22 @@ class TileFetcher(QObject):
 
     # ------------------------ private helpers ------------------------
 
-    def _tile_distance(self, item:tuple[int,int,int,int], aim: tuple[int,int,int])->int:
-        '''Calculate distance from an aimpoint tile to current tile'''
-        z, x, y, _ = item
+    def _tile_distance(self, tile:tuple[int,int,int,int], aim: tuple[int,int,int])->int:
+        '''Calculate distance from an aimpoint tile to current tile (for sorting)
+
+        Parameters
+        ----------
+            tile: tuple[int,int,int,int]
+                Tile in to test : [TMS Z, X, Y, template]
+            aim : tuple[int,int,int]
+                Current aimpoint [ TMS Z, X, Y ]
+
+        Returns
+        -------
+            distance : int
+                Distance from tile to aim
+        '''
+        z, x, y, _ = tile
         az, ax, ay = aim
         return abs(ax - x) + abs(ay - y) + (abs(az - z) * 4)
 
@@ -121,7 +160,19 @@ class TileFetcher(QObject):
         self.active[(z, x, y)] = reply
 
     def _on_finished(self, reply: QNetworkReply, z:int, x:int, y:int)->None:
-        """Handle a response from tile server - cache the tile, emit tileReady"""
+        """Handle a response from tile server - cache the tile, emit tileReady
+
+        Parameters
+        ----------
+        reply : QNetworkReply
+            Object containing response to web request
+        z : int
+            TMS Z of requested tile
+        x : int
+            TMS X of requested tile
+        y : int
+            TMS y of requested tile
+        """
         self.active.pop((z, x, y), None)
 
         if reply.error() == QNetworkReply.NetworkError.NoError:
@@ -136,9 +187,8 @@ class TileFetcher(QObject):
         reply.deleteLater()
 
 # ---------------------------------------------------------------------------
-# GUI: demonstrates interaction
+# DEMO GUI FOR TEST
 # ---------------------------------------------------------------------------
-
 class TileViewer(QWidget):
     requestTile = Signal(int, int, int, str)
     setAimpoint = Signal(int, int, int)
@@ -183,10 +233,6 @@ class TileViewer(QWidget):
         pix = QPixmap()
         pix.loadFromData(data)
         self.label.setPixmap(pix.scaled(256, 256))
-
-# ---------------------------------------------------------------------------
-# Main setup
-# ---------------------------------------------------------------------------
 
 class Signaller(QObject):
     start = Signal()
