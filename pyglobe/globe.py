@@ -57,6 +57,7 @@ class GlobeWidget(QOpenGLWidget):
         # Scene contains objects to be drawn on the map
         self.scene = Scene()
         self.scene.sigClicked.connect(self.on_object_clicked)
+        self.scene.sigUpdated.connect(self.update)
         
         # Publish info to display on a timer
         self.info_timer = QTimer(self)

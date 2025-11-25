@@ -50,6 +50,10 @@ class GlobeTestWidget(QWidget):
         self.globe.requestTile.connect(self.fetcher.requestTile)
         self.globe.setAimpoint.connect(self.fetcher.setAimpoint)
         self.fetcher.tileReady.connect(self.globe.on_tile_ready)
+
+        self.timer = QTimer()
+        self.timer.timeout.connect(self.move_satellite)
+        self.timer.start(10)
         
         # Start fetcher thread
         self.fetcher_thread.start()
@@ -159,8 +163,26 @@ class GlobeTestWidget(QWidget):
                 pick_radius=200000
             )
             self.globe.add_object(satellite)
+            self.satellite=satellite
         else:
             print(f"Warning: OBJ file not found: {satellite_obj_path}")
+
+    def move_satellite(self ):
+        import pyglobe.coord_utils as coord_utils
+        lat = self.satellite.lat
+        lon = self.satellite.lon
+
+        lon += 1
+        if lon > 180:
+            lon -= 360
+        lat += 1
+        if lat > 90:
+            lat -= 180
+        alt = self.satellite.alt
+        roll = self.satellite.roll
+        pitch = self.satellite.pitch
+        yaw = self.satellite.yaw
+        self.satellite.set_pos( lat, lon, alt, roll, pitch, yaw)
 
 
     def print_object(self, obj: scene.SceneObject):

@@ -51,6 +51,7 @@ class SceneObject(QObject):
     """
 
     sigClicked = Signal()
+    sigUpdated = Signal()
 
     def __init__(self, label):
         super().__init__()
@@ -137,6 +138,19 @@ class SceneModel(SceneObject):
         
         # Load mesh
         self.mesh = self._load_obj(obj_path)
+
+    def set_pos(self, lat, lon, alt, roll, pitch, yaw):
+        self.lat = lat
+        self.lon = lon
+        self.alt = alt
+        self.roll = roll
+        self.pitch = pitch
+        self.yaw = yaw
+
+        # Compute ECEF position
+        self.ecef_pos = np.array(lla_to_ecef(self.lat, self.lon, self.alt))
+
+        self.sigUpdated.emit()
     
     def _load_obj(self, obj_path:str) ->None:
         """Load OBJ file
@@ -813,19 +827,25 @@ class Scene(QObject):
     """Container for all scene objects"""
 
     sigClicked = Signal(SceneObject)
+    sigUpdated = Signal()
     
     def __init__(self):
         super().__init__()
         self.objects = []
+
+    def on_object_updated(self):
+        self.sigUpdated.emit()
     
     def add(self, obj):
         """Add an object to the scene"""
+        obj.sigUpdated.connect(self.on_object_updated)
         self.objects.append(obj)
     
     def remove(self, obj):
         """Remove an object from the scene"""
         if obj in self.objects:
             self.objects.remove(obj)
+        obj.sigUpdated.disconnect(self.on_object_updated)
     
     def clear(self):
         """Remove all objects"""
