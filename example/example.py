@@ -1,5 +1,6 @@
 import sys
 import os
+import pathlib
 from collections import OrderedDict
 import numpy as np
 from PySide6.QtWidgets import QApplication, QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QLabel
@@ -30,11 +31,13 @@ class GlobeTestWidget(QWidget):
         # TODO - adding this column throws off the raycasting calcs
         hbox.addLayout(vbox)
         self.globe = globe.GlobeWidget(self)
+        self.globe.tile_url_template = ("http://s3.amazonaws.com/com.modestmaps.bluemarble/{z}-r{y}-c{x}.jpg")
         hbox.addWidget(self.globe)
         self.globe.infoSig.connect(self.on_window)
         self.setLayout(hbox)
 
-        scene.add_test_objects(self.globe.scene) 
+        #scene.add_test_objects(self.globe.scene) 
+        self.add_objects()
         self.globe.sigObjectClicked.connect(self.print_object)
         
         # Set up TileFetcher in separate thread
@@ -52,8 +55,117 @@ class GlobeTestWidget(QWidget):
         self.fetcher_thread.start()
         self.startFetcher.emit()
 
+    def add_objects(self):
+        this_file = pathlib.Path(__file__).resolve()
+        this_dir  = this_file.parent
+        assets_dir = this_dir / 'assets'
+
+
+        # 1. Point - Red marker over New York
+        point = scene.PointSceneObject(
+            'Point',
+            lat=12.3601,
+            lon=12.0589,
+            alt=0,
+            color=(1.0, 0.0, 0.0),  # Red
+            size=10.0,
+            pick_radius=50000
+        )
+        self.globe.add_object(point)
+
+        # 2. Polyline -
+        track_points = [
+            (12.3601, 12.0589, 0),    
+        ]
+        for i in range(12):
+            track_points.append( ( track_points[0][0] + i * 0.2,
+                                   track_points[0][1] + i * 0.2,
+                                   0) )
+        track = scene.PolyLineSceneObject(
+            'Track',
+            points_wgs84=track_points,
+            color=(0.0, 0.0, 0.0),  # Yellow
+            width=8.0,
+            altitude_offset=2000, # earth curvature
+            pick_radius=25000
+        )
+        self.globe.add_object(track)
+
+
+
+        #----------- CIRCLE OBJECT -----------#
+        circle = scene.CircleSceneObject(
+            'Circle',
+            center_lat=10,
+            center_lon=10,
+            radius_meters=100000,
+            color=(0.0, 0.0, 0.0),
+            fill_color=(0.7, 0.7, 0.7, 0.7),
+            width=3.0,
+            altitude_offset=2000 # Earth curvature
+        )
+        self.globe.add_object(circle)
+
+        #---------- POLYGON -----------#
+        polygon_points = [
+            (3.0, -6.0, 0),  # Southwest corner
+            (3.0, -5.0, 0),   # Southeast corner
+            (4.0, -5.0, 0),   # Northeast corner
+            (4.0, -6.0, 0)   # Northwest corner
+        ]
+        polygon = scene.PolygonSceneObject(
+            'Polygon',
+            points_wgs84=polygon_points,
+            color=(1.0, 0.5, 0.0),  # Orange outline
+            fill_color=(1.0, 0.5, 0.0, 0.3),  # Semi-transparent orange fill
+            width=3.0,
+            altitude_offset=2000.0 # Account for earth curvature
+        )
+        self.globe.add_object(polygon)
+
+        #-------- IMAGE ------------#
+        # 5. Image Overlay - SAR image over California
+        img_path = assets_dir / 'images' / 'sar.jpeg'
+        if img_path.exists():
+            image_corners = [
+                (14.0, -7.0, 0),  # Bottom-left
+                (14.0, -9.0, 0),  # Bottom-right
+                (16.0, -9.0, 0),  # Top-right
+                (16.0, -7.0, 0)   # Top-left
+            ]
+            image_overlay = scene.ImageOverlaySceneObject(
+                'Image',
+                corners_wgs84=image_corners,
+                image_path=str(img_path),
+                altitude_offset=2000.0, # Account for earth curvature
+                alpha=0.7
+            )
+            self.globe.add_object(image_overlay)
+        else:
+            print(f"Warning: Image not found: {str(img_path)}")
+
+        satellite_obj_path = assets_dir / 'satellite' / 'satellite.obj'
+        if satellite_obj_path.exists():
+            satellite = scene.SceneModel(
+                'Satellite',
+                lat_deg=15.7617,
+                lon_deg=-20.1918,
+                alt_m=500000,  # 500 km altitude
+                scale=200000,   # 50 km apparent size
+                obj_path=str(satellite_obj_path),
+                roll=0,
+                pitch=0,
+                yaw=-90,
+                pick_radius=200000
+            )
+            self.globe.add_object(satellite)
+        else:
+            print(f"Warning: OBJ file not found: {satellite_obj_path}")
+
+
     def print_object(self, obj: scene.SceneObject):
-        self.additional_text.setText(f'Clicked: {obj.label}')
+        self.additional_text.setText(f'Removing: {obj.label}')
+        self.globe.remove_object(obj)
         
     def on_window(self, info_dict: dict):
         s =  f"Level:    {info_dict['level']}\n"

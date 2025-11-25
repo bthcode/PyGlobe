@@ -40,7 +40,7 @@ def gl_state_guard() -> None:
         glColor4fv(color)
 
 
-class SceneObject:
+class SceneObject(QObject):
     """Base class for all scene objects
     
     Attributes
@@ -50,7 +50,10 @@ class SceneObject:
 
     """
 
+    sigClicked = Signal()
+
     def __init__(self, label):
+        super().__init__()
         self.label = label
     
     def draw(self) -> None:
@@ -74,6 +77,12 @@ class SceneObject:
                 if hit, None if miss
         """
         raise NotImplementedError
+
+    def test_pick(self, ray_origin: np.ndarray, ray_direction:np.ndarray) -> float | None:
+        ret = self.intersect_ray(ray_origin, ray_direction)
+        if ret is not None:
+            self.sigClicked.emit()
+        return ret
     
     def __str__(self):
         return f'{self.__class__.__name__} : {self.label}'
@@ -839,7 +848,7 @@ class Scene(QObject):
         
         for obj in self.objects:
             try:
-                dist = obj.intersect_ray(ray_origin, ray_direction)
+                dist = obj.test_pick(ray_origin, ray_direction)
                 if dist is not None and dist < closest_dist:
                     closest_dist = dist
                     closest_obj = obj
@@ -849,119 +858,3 @@ class Scene(QObject):
         if closest_obj is not None:
             self.sigClicked.emit(closest_obj)
 
-# TEST 
-def add_test_objects(scene, satellite_obj_path="assets/satellite/satellite.obj",
-                     image_path="sar.jpeg"):
-    """
-    Add one of each scene object type for testing.
-
-    Parameters:
-        scene: Scene instance to add objects to
-        satellite_obj_path: Path to OBJ file for SceneModel
-        image_path: Path to image file for ImageOverlaySceneObject
-    """
-
-    # 1. Point - Red marker over New York
-    point = PointSceneObject(
-        'Example Point',
-        lat=42.3601,
-        lon=-71.0589,
-        alt=0,
-        color=(1.0, 0.0, 0.0),  # Red
-        size=20.0,
-        pick_radius=50000
-    )
-    scene.add(point)
-    print("Added: Red point over New York")
-
-    # 2. Polyline - Track from Boston to Washington DC
-    track_points = [
-        (42.3601, -71.0589, 0),      # Boston
-        (40.7128, -74.0060, 0),      # New York
-        (39.9526, -75.1652, 0),      # Philadelphia
-        (38.9072, -77.0369, 0)       # Washington DC
-    ]
-    track = PolyLineSceneObject(
-        'Example Track',
-        points_wgs84=track_points,
-        color=(0.0, 0.0, 0.0),  # Yellow
-        width=8.0,
-        altitude_offset=2000, # earth curvature
-        pick_radius=25000
-    )
-    scene.add(track)
-    print("Added: Yellow track (Boston to DC)")
-
-    # 3. Circle - 200km radius around Denver
-    circle = CircleSceneObject(
-        'Example Circle',
-        center_lat=39.7392,
-        center_lon=-104.9903,
-        radius_meters=100000,
-        color=(0.0, 0.0, 0.0),
-        fill_color=(0.0, 0.5, 0.0, 0.3),
-        width=3.0,
-        altitude_offset=2000 # Earth curvature
-    )
-    scene.add(circle)
-    print("Added: Green circle around Denver (200km radius)")
-
-    # 4. Polygon - Square over Texas
-    polygon_points = [
-        (33.0, -96.0, 0),  # Southwest corner
-        (33.0, -95.0, 0),   # Southeast corner
-        (34.0, -95.0, 0),   # Northeast corner
-        (34.0, -96.0, 0)   # Northwest corner
-    ]
-    polygon = PolygonSceneObject(
-        'Example Polygon',
-        points_wgs84=polygon_points,
-        color=(1.0, 0.5, 0.0),  # Orange outline
-        fill_color=(1.0, 0.5, 0.0, 0.3),  # Semi-transparent orange fill
-        width=3.0,
-        altitude_offset=2000.0 # Account for earth curvature
-    )
-    scene.add(polygon)
-    print("Added: Orange polygon over Texas")
-
-    # 5. Image Overlay - SAR image over California
-    if os.path.exists(image_path):
-        image_corners = [
-            (34.0, -120.0, 0),  # Bottom-left
-            (34.0, -118.0, 0),  # Bottom-right
-            (36.0, -118.0, 0),  # Top-right
-            (36.0, -120.0, 0)   # Top-left
-        ]
-        image_overlay = ImageOverlaySceneObject(
-            'Example Image',
-            corners_wgs84=image_corners,
-            image_path=image_path,
-            altitude_offset=2000.0, # Account for earth curvature
-            alpha=0.7
-        )
-        scene.add(image_overlay)
-        print(f"Added: Image overlay over California ({image_path})")
-    else:
-        print(f"Warning: Image not found: {image_path}")
-
-    # 6. SceneModel - Satellite over Miami
-    if os.path.exists(satellite_obj_path):
-        satellite = SceneModel(
-            'Example Mesh Object',
-            lat_deg=25.7617,
-            lon_deg=-80.1918,
-            alt_m=500000,  # 500 km altitude
-            scale=200000,   # 50 km apparent size
-            obj_path=satellite_obj_path,
-            roll=0,
-            pitch=0,
-            yaw=-90,
-            pick_radius=200000
-        )
-        scene.add(satellite)
-        print(f"Added: Satellite over Miami at 500km altitude")
-    else:
-        print(f"Warning: OBJ file not found: {satellite_obj_path}")
-
-    print(f"\nTotal objects in scene: {len(scene.objects)}")
-    print("All objects are pickable - click on them to test!")

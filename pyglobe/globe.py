@@ -440,9 +440,17 @@ class GlobeWidget(QOpenGLWidget):
             self.update()
 
     
-    #------------------------------------------------------
-    # OBJECT PICKING
-    #------------------------------------------------------
+    #--------------------------------------------------------------
+    # Map Object Management
+    #--------------------------------------------------------------
+    def add_object(self, obj : SceneObject ) -> None:
+        self.scene.add(obj)
+        self.update()
+
+    def remove_object(self, obj : SceneObject) -> None:
+        self.scene.remove(obj)
+        self.update()
+
     def mouse_to_ray(self, mouse_x, mouse_y):
         """
         Convert mouse coordinates to a ray in ECEF space.
@@ -515,5 +523,6 @@ class GlobeWidget(QOpenGLWidget):
         ray_dir_world = ray_dir_world / np.linalg.norm(ray_dir_world)
 
         return cam_pos, ray_dir_world
+
 
 # end class GlobeWidget
