@@ -5,3 +5,4 @@
 3. Example
     - switch between tile providers
     - interact with map objects
+4. Document APIs
