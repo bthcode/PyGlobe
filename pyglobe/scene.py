@@ -1,6 +1,7 @@
 from OpenGL.GL import *
 from OpenGL.GLU import *
 from PySide6.QtCore import QObject, Signal
+from PySide6.QtGui import QImage
 import numpy as np
 import os
 from pyglobe.coord_utils import lla_to_ecef, get_enu_to_ecef_matrix
@@ -299,13 +300,17 @@ class PointSceneObject(SceneObject):
         '''
 
         super().__init__(label)
-        self.lat = lat
-        self.lon = lon
-        self.alt = alt
         self.color = color
         self.size = size
         self.pick_radius = pick_radius
+        self.set_pos(lat, lon, alt)
+
+    def set_pos(self, lat, lon, alt):
+        self.lat = lat
+        self.lon = lon
+        self.alt = alt
         self.xyz = np.array(lla_to_ecef(lat, lon, alt))
+        self.sigUpdated.emit()
     
     def draw(self) -> None:
         '''Drow this object in OpenGL'''
@@ -378,15 +383,20 @@ class PolyLineSceneObject(SceneObject):
         '''
 
         super().__init__(label)
-        self.points_wgs84 = points_wgs84
         self.color = color
         self.width = width
         self.pick_radius = pick_radius
-        
+        self.altitude_offset = altitude_offset 
+        self.set_points(points_wgs84)
+
+    def set_points(self, points_wgs84):
+        self.points_wgs84 = points_wgs84
+
         self.points_xyz = [
-            np.array(lla_to_ecef(lat, lon, alt + altitude_offset))
+            np.array(lla_to_ecef(lat, lon, alt + self.altitude_offset))
             for lat, lon, alt in self.points_wgs84
         ]
+        self.sigUpdated.emit()
     
     def draw(self):
         with gl_state_guard():
@@ -502,21 +512,27 @@ class CircleSceneObject(SceneObject):
             Distance above the surface of the earth to draw this object
         '''
         super().__init__(label)
-        self.center_lat = center_lat
-        self.center_lon = center_lon
-        self.radius_meters = radius_meters
         self.color = color
         self.width = width
         self.altitude_offset = altitude_offset
         self.fill_color=fill_color
+        self.num_points = num_points
+        self.altitude_offset = altitude_offset
+        self.set_pos(center_lat, center_lon, radius_meters)
         
+
+    def set_pos(self, center_lat, center_lon, radius_meters):
+        self.center_lat = center_lat
+        self.center_lon = center_lon
+        self.radius_meters = radius_meters
+
         # Generate circle points
         earth_radius = 6371000
         angular_radius = radius_meters / earth_radius
         
         points_wgs84 = []
-        for i in range(num_points + 1):
-            angle = 2 * np.pi * i / num_points
+        for i in range(self.num_points + 1):
+            angle = 2 * np.pi * i / self.num_points
             dlat = angular_radius * np.cos(angle) * 180 / np.pi
             dlon = angular_radius * np.sin(angle) * 180 / np.pi / np.cos(np.radians(center_lat))
             
@@ -525,11 +541,13 @@ class CircleSceneObject(SceneObject):
             points_wgs84.append((lat, lon, 0.0))
         
         self.points_xyz = [
-            np.array(lla_to_ecef(lat, lon, alt + altitude_offset))
+            np.array(lla_to_ecef(lat, lon, alt + self.altitude_offset))
             for lat, lon, alt in points_wgs84
         ]
         
-        self.center_xyz = np.array(lla_to_ecef(center_lat, center_lon, altitude_offset))
+        self.center_xyz = np.array(lla_to_ecef(center_lat, center_lon, self.altitude_offset))
+        self.sigUpdated.emit()
+
     
     def draw(self):
         with gl_state_guard():
@@ -622,19 +640,24 @@ class PolygonSceneObject(SceneObject):
             Transparency of this polygon (0=totally transparent, 1=not transparent)
         '''
         super().__init__(label)
-        self.points_wgs84 = points_wgs84
         self.color = color
         self.fill_color = fill_color if fill_color else (*color, alpha)
         self.width = width
         self.altitude_offset = altitude_offset
+        self.set_points(points_wgs84)
         
+
+    def set_points(self, points_wgs84):
+        self.points_wgs84 = points_wgs84
         self.points_xyz = [
-            np.array(lla_to_ecef(lat, lon, alt + altitude_offset))
+            np.array(lla_to_ecef(lat, lon, alt + self.altitude_offset))
             for lat, lon, alt in self.points_wgs84
         ]
         
         self.center_xyz = np.mean(self.points_xyz, axis=0)
         self.bounding_radius = max([np.linalg.norm(p - self.center_xyz) for p in self.points_xyz])
+        self.sigUpdated.emit()
+
     
     def draw(self) -> None:
         '''OpenGL Drawing Function for this object'''
@@ -720,27 +743,35 @@ class ImageOverlaySceneObject(SceneObject):
             transparancy to apply.  0 = fully transparnt, 1=not transparent
         """
         super().__init__(label)
-        self.corners_wgs84 = corners_wgs84
-        self.image_path = image_path
         self.altitude_offset = altitude_offset
         self.alpha = alpha
         self.texture_id = None
+        self.image_changed = True
+        self.image_path = image_path
+        self.set_corners(corners_wgs84)
         
+
+    def set_corners(self, corners_wgs84):
+        self.corners_wgs84 = corners_wgs84
         self.corners_xyz = [
-            np.array(lla_to_ecef(lat, lon, alt + altitude_offset))
+            np.array(lla_to_ecef(lat, lon, alt + self.altitude_offset))
             for lat, lon, alt in self.corners_wgs84
         ]
         
         self.center_xyz = np.mean(self.corners_xyz, axis=0)
         self.bounding_radius = max([np.linalg.norm(p - self.center_xyz) for p in self.corners_xyz])
+        self.sigUpdated.emit()
+
+    def set_image(self, image_path):
+        self.image_path = image_path
+        self.image_changed = True
+        self.sigUpdated.emit()
         
     def _load_texture(self):
         """Load image as OpenGL texture"""
         if not os.path.exists(self.image_path):
             print(f"Warning: Image not found: {self.image_path}")
             return
-        
-        from PySide6.QtGui import QImage
         
         image = QImage(self.image_path)
         if image.isNull():
@@ -761,8 +792,20 @@ class ImageOverlaySceneObject(SceneObject):
         glBindTexture(GL_TEXTURE_2D, 0)
     
     def draw(self) -> None:
+        '''Remarks
+           -------
+           - All texture loading and unloading should be done here so 
+             it is driven by the OpenGL context
+        '''
+        # Check if we have a new image
+        if self.image_changed and self.texture_id is not None:
+            glDeleteTextures([self.texture_id])
+            self.texture_id = None
+            self.image_changed = False
+        # Check if we need to load a texture
         if not self.texture_id:
             self._load_texture()
+        # Error check
         if not self.texture_id:
             return
         

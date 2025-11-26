@@ -51,9 +51,11 @@ class GlobeTestWidget(QWidget):
         self.globe.setAimpoint.connect(self.fetcher.setAimpoint)
         self.fetcher.tileReady.connect(self.globe.on_tile_ready)
 
+        self.counter = 0
+
         self.timer = QTimer()
-        self.timer.timeout.connect(self.move_satellite)
-        self.timer.start(10)
+        self.timer.timeout.connect(self.on_timer)
+        self.timer.start(1000)
         
         # Start fetcher thread
         self.fetcher_thread.start()
@@ -129,7 +131,11 @@ class GlobeTestWidget(QWidget):
 
         #-------- IMAGE ------------#
         # 5. Image Overlay - SAR image over California
-        img_path = assets_dir / 'images' / 'sar.jpeg'
+        self.images = [ assets_dir / 'images' / 'squirrel_tail_bushy_tail.jpg',	
+                        assets_dir / 'images' / 'squirrel_tree_mammal_paw.jpg' ]
+        self.image_idx = 0
+
+        img_path = self.images[self.image_idx]
         if img_path.exists():
             image_corners = [
                 (14.0, -7.0, 0),  # Bottom-left
@@ -137,14 +143,14 @@ class GlobeTestWidget(QWidget):
                 (16.0, -9.0, 0),  # Top-right
                 (16.0, -7.0, 0)   # Top-left
             ]
-            image_overlay = scene.ImageOverlaySceneObject(
+            self.image_overlay = scene.ImageOverlaySceneObject(
                 'Image',
                 corners_wgs84=image_corners,
                 image_path=str(img_path),
                 altitude_offset=2000.0, # Account for earth curvature
                 alpha=0.7
             )
-            self.globe.add_object(image_overlay)
+            self.globe.add_object(self.image_overlay)
         else:
             print(f"Warning: Image not found: {str(img_path)}")
 
@@ -167,8 +173,11 @@ class GlobeTestWidget(QWidget):
         else:
             print(f"Warning: OBJ file not found: {satellite_obj_path}")
 
-    def move_satellite(self ):
-        import pyglobe.coord_utils as coord_utils
+    def on_timer(self ):
+        # Test function for moving stuff
+        self.counter += 1
+
+        # Move the satellite
         lat = self.satellite.lat
         lon = self.satellite.lon
 
@@ -183,6 +192,20 @@ class GlobeTestWidget(QWidget):
         pitch = self.satellite.pitch
         yaw = self.satellite.yaw
         self.satellite.set_pos( lat, lon, alt, roll, pitch, yaw)
+
+        # Swap images
+        if self.counter > 5:
+            self.image_idx += 1
+            self.image_overlay.set_image(self.images[self.image_idx % len(self.images) ] )
+            self.counter = 0
+
+        # Move the image
+        corners = self.image_overlay.corners_wgs84
+        new_corners = []
+        for corner in corners:
+            new_corner = (corner[0] + 0.1, corner[1] -0.1, corner[2])
+            new_corners.append(new_corner)
+        self.image_overlay.set_corners(new_corners)
 
 
     def print_object(self, obj: scene.SceneObject):
