@@ -68,7 +68,7 @@ class GlobeTestWidget(QWidget):
 
 
         # 1. Point - Red marker over New York
-        point = scene.PointSceneObject(
+        self.point = scene.PointSceneObject(
             'Point',
             lat=12.3601,
             lon=12.0589,
@@ -77,7 +77,7 @@ class GlobeTestWidget(QWidget):
             size=10.0,
             pick_radius=50000
         )
-        self.globe.add_object(point)
+        self.globe.add_object(self.point)
 
         # 2. Polyline -
         track_points = [
@@ -87,7 +87,7 @@ class GlobeTestWidget(QWidget):
             track_points.append( ( track_points[0][0] + i * 0.2,
                                    track_points[0][1] + i * 0.2,
                                    0) )
-        track = scene.PolyLineSceneObject(
+        self.track = scene.PolyLineSceneObject(
             'Track',
             points_wgs84=track_points,
             color=(0.0, 0.0, 0.0),  # Yellow
@@ -95,12 +95,12 @@ class GlobeTestWidget(QWidget):
             altitude_offset=2000, # earth curvature
             pick_radius=25000
         )
-        self.globe.add_object(track)
+        self.globe.add_object(self.track)
 
 
 
         #----------- CIRCLE OBJECT -----------#
-        circle = scene.CircleSceneObject(
+        self.circle = scene.CircleSceneObject(
             'Circle',
             center_lat=10,
             center_lon=10,
@@ -110,7 +110,7 @@ class GlobeTestWidget(QWidget):
             width=3.0,
             altitude_offset=2000 # Earth curvature
         )
-        self.globe.add_object(circle)
+        self.globe.add_object(self.circle)
 
         #---------- POLYGON -----------#
         polygon_points = [
@@ -119,7 +119,7 @@ class GlobeTestWidget(QWidget):
             (4.0, -5.0, 0),   # Northeast corner
             (4.0, -6.0, 0)   # Northwest corner
         ]
-        polygon = scene.PolygonSceneObject(
+        self.polygon = scene.PolygonSceneObject(
             'Polygon',
             points_wgs84=polygon_points,
             color=(1.0, 0.5, 0.0),  # Orange outline
@@ -127,7 +127,7 @@ class GlobeTestWidget(QWidget):
             width=3.0,
             altitude_offset=2000.0 # Account for earth curvature
         )
-        self.globe.add_object(polygon)
+        self.globe.add_object(self.polygon)
 
         #-------- IMAGE ------------#
         # 5. Image Overlay - SAR image over California
@@ -138,10 +138,10 @@ class GlobeTestWidget(QWidget):
         img_path = self.images[self.image_idx]
         if img_path.exists():
             image_corners = [
-                (14.0, -7.0, 0),  # Bottom-left
-                (14.0, -9.0, 0),  # Bottom-right
-                (16.0, -9.0, 0),  # Top-right
-                (16.0, -7.0, 0)   # Top-left
+                (-14.0, -7.0, 0),  # Bottom-left
+                (-14.0, -9.0, 0),  # Bottom-right
+                (-16.0, -9.0, 0),  # Top-right
+                (-16.0, -7.0, 0)   # Top-left
             ]
             self.image_overlay = scene.ImageOverlaySceneObject(
                 'Image',
@@ -181,12 +181,11 @@ class GlobeTestWidget(QWidget):
         lat = self.satellite.lat
         lon = self.satellite.lon
 
-        lon += 1
-        if lon > 180:
-            lon -= 360
-        lat += 1
-        if lat > 90:
-            lat -= 180
+        lon += 0.2
+        if lon > 180: lon -= 360
+        lat += 0.2
+        # Note - this jumps you from pole to pole.  Good enough for a demo
+        if lat > 90: lat -= 180
         alt = self.satellite.alt
         roll = self.satellite.roll
         pitch = self.satellite.pitch
@@ -206,6 +205,35 @@ class GlobeTestWidget(QWidget):
             new_corner = (corner[0] + 0.1, corner[1] -0.1, corner[2])
             new_corners.append(new_corner)
         self.image_overlay.set_corners(new_corners)
+
+        # Move the circle
+        radius = self.circle.radius_meters
+        radius += 10_000
+        if radius >= 150_000:
+            radius = 80_000
+        self.circle.set_pos(self.circle.center_lat,
+                            self.circle.center_lon,
+                            radius)
+
+        # Track and point
+        polyline_points = self.track.points_wgs84
+        new_points = []
+        for point in polyline_points:
+            newpoint = (point[0] - 0.2, point[1] - 0.2, point[2] )
+            new_points.append(newpoint)
+        self.track.set_points(new_points)
+
+        self.point.set_pos(self.point.lat -0.2, self.point.lon - 0.2, self.point.alt)
+
+        # Polygon
+        polygon_points = self.polygon.points_wgs84
+        new_points = []
+        for point in polygon_points:
+            newpoint = (point[0] + 0.2, point[1] - 0.2, point[2] )
+            new_points.append(newpoint)
+        self.polygon.set_points(new_points)
+
+        self.polygon.set_points(new_points)
 
 
     def print_object(self, obj: scene.SceneObject):
