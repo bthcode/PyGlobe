@@ -31,7 +31,7 @@ class GlobeTestWidget(QWidget):
         # TODO - adding this column throws off the raycasting calcs
         hbox.addLayout(vbox)
         self.globe = globe.GlobeWidget(self)
-        self.globe.tile_url_template = ("http://s3.amazonaws.com/com.modestmaps.bluemarble/{z}-r{y}-c{x}.jpg")
+        #self.globe.tile_url_template = ("http://s3.amazonaws.com/com.modestmaps.bluemarble/{z}-r{y}-c{x}.jpg")
         hbox.addWidget(self.globe)
         self.globe.infoSig.connect(self.on_window)
         self.setLayout(hbox)
