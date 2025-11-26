@@ -55,7 +55,7 @@ class GlobeTestWidget(QWidget):
 
         self.timer = QTimer()
         self.timer.timeout.connect(self.on_timer)
-        self.timer.start(1000)
+        self.timer.start(100)
         
         # Start fetcher thread
         self.fetcher_thread.start()
@@ -181,9 +181,9 @@ class GlobeTestWidget(QWidget):
         lat = self.satellite.lat
         lon = self.satellite.lon
 
-        lon += 0.2
+        lon += 0.1
         if lon > 180: lon -= 360
-        lat += 0.2
+        lat += 0.1
         # Note - this jumps you from pole to pole.  Good enough for a demo
         if lat > 90: lat -= 180
         alt = self.satellite.alt
@@ -219,17 +219,17 @@ class GlobeTestWidget(QWidget):
         polyline_points = self.track.points_wgs84
         new_points = []
         for point in polyline_points:
-            newpoint = (point[0] - 0.2, point[1] - 0.2, point[2] )
+            newpoint = (point[0] - 0.1, point[1] - 0.1, point[2] )
             new_points.append(newpoint)
         self.track.set_points(new_points)
 
-        self.point.set_pos(self.point.lat -0.2, self.point.lon - 0.2, self.point.alt)
+        self.point.set_pos(self.point.lat -0.1, self.point.lon - 0.1, self.point.alt)
 
         # Polygon
         polygon_points = self.polygon.points_wgs84
         new_points = []
         for point in polygon_points:
-            newpoint = (point[0] + 0.2, point[1] - 0.2, point[2] )
+            newpoint = (point[0] + 0.1, point[1] - 0.1, point[2] )
             new_points.append(newpoint)
         self.polygon.set_points(new_points)
 
