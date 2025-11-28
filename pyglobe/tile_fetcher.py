@@ -62,9 +62,7 @@ class TileFetcher(QObject):
     @Slot()
     def shutdown(self)->None:
         """Cleanly stop timers and pending operations."""
-        print('hi brian')
         self.timer.stop()
-        print ('blather')
         for reply in list(self.active.values()):
             reply.abort()
         self.active.clear()
@@ -114,7 +112,6 @@ class TileFetcher(QObject):
         url_template : str
             URL to download tiles from
         """
-        print (f"tile requested: {z}, {x}, {y}")
         cache_path = os.path.join(self.cache_dir, str(z), str(x), f"{y}.png")
 
         # already on disk?
@@ -127,7 +124,6 @@ class TileFetcher(QObject):
         if (z, x, y) in self.requested:
             return
 
-        print (f'self.url_template = {self.url_template}')
 
         self.requested.add((z, x, y))
         self.pending.append((z, x, y, self.url_template))
@@ -157,9 +153,7 @@ class TileFetcher(QObject):
     @Slot()
     def _dispatch_next(self)->None:
         """If any downloaders are available, start a download"""
-        #print ("_dipatch next")
         if len(self.active) >= 4 or not self.pending:
-            #print (f"nope: {len(self.active)}, {self.pending}")
             return
 
         z, x, y, url_template = self.pending.pop(0)
@@ -199,13 +193,30 @@ class TileFetcher(QObject):
         reply.deleteLater()
 
 
-# ---------------------------------------------------------------------------
-# Tile Manager Wrapper
-# ---------------------------------------------------------------------------
 class TileManager(QObject):
     """
-    Manages a TileFetcher instance and its QThread, ensuring QNetworkAccessManager
-    is created inside the worker thread and shutdown is clean.
+    Wrapper for TileFetcher and a thread it lives in.  This is the class that the main thread should interact with,
+
+    Remarks
+    -------
+    - Methods callable by the main thread
+    - Sends signals to the tile fetcher inside a thread
+    - Safelly initializes the tile fetcher child objects within the threads using signals
+
+    Signals
+    -------
+    tileReady : int, int, int, bytes
+        Sends a tile to the main app
+    sigSetAimpoint: int, int, int
+        Tell the tile fetcher that what the current aimpoint is
+    sigReset: 
+        Tell the file fetcher to reset itself
+    sigRequestTile: int, int, int
+        Tell the tile fetcher to fetch a tile (z, x, y)
+    sigStartFetcher: 
+        Tell the tile fetcher to initialize child objects
+    sigShutdown:
+        Tell the tile fetcher to shutdown
     """
     tileReady = Signal(int, int, int, bytes)
     sigSetAimpoint = Signal(int, int, int)
@@ -222,9 +233,17 @@ class TileManager(QObject):
         self.set_fetcher(cache_dir, url_template)
 
 
-    def set_fetcher(self, cache_dir, url_template):
+    def set_fetcher(self, cache_dir:str, url_template:str) -> None:
+        '''Set a tile source
+
+        Parameters
+        ----------
+        cache_dir : str
+            root directory for caching
+        url_template : str
+            template for downloads, must include {z}, {x}, and {y}
+        '''
         if self._thread is not None:
-            print ("ERROR: already started")
             return
 
         # Thread and worker
@@ -254,35 +273,30 @@ class TileManager(QObject):
 
 
     @Slot()
-    def _on_thread_started(self):
+    def _on_thread_started(self) -> None:
         """
-        Ensure worker-owned objects (QNetworkAccessManager) are created inside the worker thread.
-        We call the worker's initNetwork via a QueuedConnection so it runs inside the worker thread.
+        After the thread has started, singnal the tile fetcher to initialize child objects
         """
         self.sigStartFetcher.emit()
 
     @Slot()
-    def _on_thread_finished(self):
+    def _on_thread_finished(self) -> None:
         """
         Cleanup when thread finished.
         """
-        print("TileFetcherManager: thread finished; cleaning up worker")
-        # Worker is still a QObject; schedule deletion
         self._fetcher.deleteLater()
 
     # Public API
-    def start(self):
+    def start(self) -> None:
         """Start the thread and initialize the worker."""
         if not self._thread.isRunning():
             self._thread.start()
-            print("TileFetcherManager: thread.start() called")
 
-    def stop(self):
+    def stop(self) -> None:
         """Stop the thread cleanly and wait for it to finish."""
-        print ("tile manager stop")
         self.sigShutdown.emit()
 
-        # Timed wait
+        # Wait for fetcher to stop running before stopping the thread
         now = time.time() 
         while self._fetcher is not None and self._fetcher.running:
             time.sleep(0.1)
@@ -292,15 +306,37 @@ class TileManager(QObject):
         if self._thread.isRunning():
             self._thread.quit()
             self._thread.wait()
-            print("TileFetcherManager: thread.quit() / wait() completed")
 
-    def sendReset(self):
+    def sendReset(self) -> None:
+        '''Send reset signal to fetcher'''
         self.sigReset.emit()
 
-    def setAimpoint(self, zoom, x, y):
+    def setAimpoint(self, zoom:int, x:int, y:int)->None:
+        '''Send set aimpoint to fetcher.  Used for prioritization
+        
+        Parameters
+        ----------
+        zoom : int
+            TMS zoom level
+        x : int
+            TMS x
+        y : int
+            TMS y
+        '''
         self.sigSetAimpoint.emit(zoom, x, y)
 
-    def requestTile(self, zoom, x, y):
+    def requestTile(self, zoom:int, x:int, y:int)->None:
+        '''Send tile request to fetcher
+        
+        Parameters
+        ----------
+        zoom : int
+            TMS zoom level
+        x : int
+            TMS x
+        y : int
+            TMS y
+        '''
         self.sigRequestTile.emit(zoom, x, y)
 
 # ---------------------------------------------------------------------------
@@ -373,13 +409,11 @@ class TileViewer(QWidget):
 
     @Slot(int, int, int, bytes)
     def onTileReady(self, z, x, y, data):
-        print(f"Tile ready: {z}/{x}/{y}")
         pix = QPixmap()
         pix.loadFromData(data)
         self.label.setPixmap(pix.scaled(256, 256))
 
     def closeEvent(self, evt):
-        print ('close event')
         self.tile_manager.stop()
 
 
