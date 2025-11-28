@@ -3,7 +3,7 @@ import os
 import pathlib
 from collections import OrderedDict
 import numpy as np
-from PySide6.QtWidgets import QApplication, QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QLabel
+from PySide6.QtWidgets import QApplication, QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QLabel, QComboBox
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
 from PySide6.QtCore import Qt, QTimer, QThread, Signal, Slot
 from PySide6.QtGui import QImage
@@ -22,6 +22,15 @@ class GlobeTestWidget(QWidget):
         hbox = QHBoxLayout()
         vbox = QVBoxLayout()
 
+        # Drop-down to select map source 
+        self.map_combo = QComboBox()
+        self.map_combo.addItems(
+            ["OSM", "Blue Marble" ]
+        )
+        self.map_combo.currentIndexChanged.connect(self.on_map_combo)
+        vbox.addWidget(self.map_combo)
+
+        # Text area to print display debug output
         self.text = QLabel('Label')
         vbox.addWidget(self.text)
 
@@ -30,36 +39,36 @@ class GlobeTestWidget(QWidget):
 
         # TODO - adding this column throws off the raycasting calcs
         hbox.addLayout(vbox)
+
+        # Globe Widget
         self.globe = globe.GlobeWidget(self)
         #self.globe.tile_url_template = ("http://s3.amazonaws.com/com.modestmaps.bluemarble/{z}-r{y}-c{x}.jpg")
         hbox.addWidget(self.globe)
+
+        # Connect globe events
         self.globe.infoSig.connect(self.on_window)
         self.setLayout(hbox)
 
-        #scene.add_test_objects(self.globe.scene) 
         self.add_objects()
         self.globe.sigObjectClicked.connect(self.print_object)
         
-        # Set up TileFetcher in separate thread
-        self.fetcher_thread = QThread()
-        self.fetcher = tile_fetcher.TileFetcher(cache_dir="cache")
-        self.fetcher.moveToThread(self.fetcher_thread)
-        
-        # Connect signals
-        self.startFetcher.connect(self.fetcher.start)
-        self.globe.requestTile.connect(self.fetcher.requestTile)
-        self.globe.setAimpoint.connect(self.fetcher.setAimpoint)
-        self.fetcher.tileReady.connect(self.globe.on_tile_ready)
-
         self.counter = 0
 
-        self.timer = QTimer()
-        self.timer.timeout.connect(self.on_timer)
-        self.timer.start(100)
+        self.move_examples_timer = QTimer()
+        self.move_examples_timer.timeout.connect(self.on_timer)
+        self.move_examples_timer.start(100)
         
-        # Start fetcher thread
-        self.fetcher_thread.start()
-        self.startFetcher.emit()
+
+    def on_map_combo(self):
+        txt = self.map_combo.currentText()
+        if txt == 'OSM':
+            cache_dir = 'osm'
+            url_template = "https://tile.openstreetmap.org/{z}/{x}/{y}.png"
+        else:
+            cache_dir = 'bluemarble'
+            url_template = "http://s3.amazonaws.com/com.modestmaps.bluemarble/{z}-r{y}-c{x}.jpg"
+        self.globe.init_tile_manager(cache_dir, url_template)
+
 
     def add_objects(self):
         this_file = pathlib.Path(__file__).resolve()
@@ -252,6 +261,11 @@ class GlobeTestWidget(QWidget):
 
         self.text.setText(s)
 
+    def close(self):
+        self.move_examples_timer.stop()
+        self.globe.close()
+
+
 class MainWindow(QMainWindow):
     
     def __init__(self):
@@ -261,6 +275,8 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(self.globe_widget)
         self.statusBar().showMessage('Left click/drag to move. Right click to select objects')
 
+    def closeEvent(self, event):
+        self.globe_widget.close()
 
 if __name__ == '__main__':
     # Create a diretory for tile caching
@@ -270,9 +286,6 @@ if __name__ == '__main__':
     window = MainWindow()
     
     # Cleanup on exit
-    app.aboutToQuit.connect(window.globe_widget.fetcher.shutdown)
-    app.aboutToQuit.connect(window.globe_widget.fetcher_thread.quit)
-    app.aboutToQuit.connect(window.globe_widget.fetcher_thread.wait)
     window.resize(1200,800) 
     window.show()
     sys.exit(app.exec())

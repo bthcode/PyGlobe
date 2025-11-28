@@ -15,7 +15,7 @@ from OpenGL.GL import *
 from OpenGL.GLU import *
 
 # This Project Imports
-from pyglobe.tile_fetcher import TileFetcher
+from pyglobe.tile_fetcher import TileManager
 from pyglobe.scene import *
 from pyglobe.coord_utils import *
 from pyglobe.tile_utils import latlon_to_tile, tile_y_to_lat
@@ -64,7 +64,20 @@ class GlobeWidget(QOpenGLWidget):
         self.info_timer.timeout.connect(self.publish_display_info)
         self.info_timer.start(1000)
 
+        self.tile_manager = None
+        self.init_tile_manager(self.tile_cache_path, self.tile_url_template)
+
+        
         self.base_layer_loaded = False
+
+    def init_tile_manager(self, cache_dir, url_template):
+        if self.tile_manager is not None:
+            self.tile_manager.stop()
+            del self.tile_manager
+
+        self.tile_manager = TileManager(cache_dir, url_template)
+        self.tile_manager.tileReady.connect(self.on_tile_ready)
+        self.tile_manager.start()
 
         
     def initializeGL(self):
@@ -190,7 +203,7 @@ class GlobeWidget(QOpenGLWidget):
         self.current_tile_y = center_y
 
         # Set aimpoint for prioritization
-        self.setAimpoint.emit(zoom, center_x, center_y)
+        self.tile_manager.setAimpoint(zoom, center_x, center_y)
         
         n = 2 ** zoom
         
@@ -234,7 +247,7 @@ class GlobeWidget(QOpenGLWidget):
             return
         z,x,y = key
         self.inflight_tiles[key] = True
-        self.requestTile.emit(z,x,y,self.tile_url_template)
+        self.tile_manager.requestTile(z,x,y)
 
     @Slot(int, int, int, bytes)
     def on_tile_ready(self, z, x, y, data):
@@ -439,6 +452,10 @@ class GlobeWidget(QOpenGLWidget):
             self.camera_distance = 15000000
             self.auto_rotate = True
             self.update()
+
+    def close(self):
+        if self.tile_manager is not None:
+            self.tile_manager.stop()
 
     
     #--------------------------------------------------------------
