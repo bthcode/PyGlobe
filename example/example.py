@@ -11,7 +11,6 @@ from OpenGL.GL import *
 from OpenGL.GLU import *
 
 from pyglobe import globe
-from pyglobe import tile_fetcher
 from pyglobe import scene
 
 class GlobeTestWidget(QWidget):

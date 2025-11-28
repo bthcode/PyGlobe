@@ -12,10 +12,10 @@ from PySide6.QtGui import QPixmap
 from PySide6.QtNetwork import QNetworkAccessManager, QNetworkRequest, QNetworkReply
 
 # ---------------------------------------------------------------------------
-# TileFetcher: lives entirely in its own QThread
+# TileDownloader: lives entirely in its own QThread
 # ---------------------------------------------------------------------------
 
-class TileFetcher(QObject):
+class TileDownloader(QObject):
     '''TMS caching tile retreiver 
 
     Remarks
@@ -48,7 +48,7 @@ class TileFetcher(QObject):
         self.timer = None
         self.nam = None
 
-        self.user_agent = b"Mozilla/5.0 (TileFetcher PyQt Example)"
+        self.user_agent = b"Mozilla/5.0 (TileDownloader PyQt Example)"
 
     @Slot()
     def start(self)->None:
@@ -195,45 +195,45 @@ class TileFetcher(QObject):
 
 class TileManager(QObject):
     """
-    Wrapper for TileFetcher and a thread it lives in.  This is the class that the main thread should interact with,
+    Wrapper for TileDownloader and a thread it lives in.  This is the class that the main thread should interact with,
 
     Remarks
     -------
     - Methods callable by the main thread
-    - Sends signals to the tile fetcher inside a thread
-    - Safelly initializes the tile fetcher child objects within the threads using signals
+    - Sends signals to the tile downloader inside a thread
+    - Safelly initializes the tile downloader child objects within the threads using signals
 
     Signals
     -------
     tileReady : int, int, int, bytes
         Sends a tile to the main app
     sigSetAimpoint: int, int, int
-        Tell the tile fetcher that what the current aimpoint is
+        Tell the tile downloader that what the current aimpoint is
     sigReset: 
-        Tell the file fetcher to reset itself
+        Tell the file downloader to reset itself
     sigRequestTile: int, int, int
-        Tell the tile fetcher to fetch a tile (z, x, y)
-    sigStartFetcher: 
-        Tell the tile fetcher to initialize child objects
+        Tell the tile downloader to fetch a tile (z, x, y)
+    sigStartDownloader: 
+        Tell the tile downloader to initialize child objects
     sigShutdown:
-        Tell the tile fetcher to shutdown
+        Tell the tile downloader to shutdown
     """
     tileReady = Signal(int, int, int, bytes)
     sigSetAimpoint = Signal(int, int, int)
     sigReset = Signal()
     sigRequestTile = Signal(int, int, int)
-    sigStartFetcher = Signal()
+    sigStartDownloader = Signal()
     sigShutdown = Signal()
 
     def __init__(self, cache_dir : str = '', url_template : str = ''):
         super().__init__()
         self._thread = None
-        self._fetcher = None
+        self._downloader = None
 
-        self.set_fetcher(cache_dir, url_template)
+        self.set_downloader(cache_dir, url_template)
 
 
-    def set_fetcher(self, cache_dir:str, url_template:str) -> None:
+    def set_downloader(self, cache_dir:str, url_template:str) -> None:
         '''Set a tile source
 
         Parameters
@@ -249,23 +249,23 @@ class TileManager(QObject):
         # Thread and worker
         self._thread = QThread(self)
 
-        self._fetcher = TileFetcher(cache_dir=cache_dir, url_template=url_template)
+        self._downloader = TileDownloader(cache_dir=cache_dir, url_template=url_template)
 
 
         # Move worker to thread (it will live in that thread after the thread starts)
-        self._fetcher.moveToThread(self._thread)
+        self._downloader.moveToThread(self._thread)
 
         # Tile Ready Signal
-        self._fetcher.tileReady.connect(self.tileReady)
+        self._downloader.tileReady.connect(self.tileReady)
 
         # Tile Request Signals
-        self.sigSetAimpoint.connect(self._fetcher.setAimpoint)
-        self.sigReset.connect(self._fetcher.reset)
-        self.sigRequestTile.connect(self._fetcher.requestTile)
+        self.sigSetAimpoint.connect(self._downloader.setAimpoint)
+        self.sigReset.connect(self._downloader.reset)
+        self.sigRequestTile.connect(self._downloader.requestTile)
 
         # START AND STOP SIGNALS
-        self.sigStartFetcher.connect(self._fetcher.start)
-        self.sigShutdown.connect(self._fetcher.shutdown)
+        self.sigStartDownloader.connect(self._downloader.start)
+        self.sigShutdown.connect(self._downloader.shutdown)
 
         # Thread lifecycle wiring
         self._thread.started.connect(self._on_thread_started)
@@ -275,16 +275,16 @@ class TileManager(QObject):
     @Slot()
     def _on_thread_started(self) -> None:
         """
-        After the thread has started, singnal the tile fetcher to initialize child objects
+        After the thread has started, singnal the tile downloader to initialize child objects
         """
-        self.sigStartFetcher.emit()
+        self.sigStartDownloader.emit()
 
     @Slot()
     def _on_thread_finished(self) -> None:
         """
         Cleanup when thread finished.
         """
-        self._fetcher.deleteLater()
+        self._downloader.deleteLater()
 
     # Public API
     def start(self) -> None:
@@ -296,9 +296,9 @@ class TileManager(QObject):
         """Stop the thread cleanly and wait for it to finish."""
         self.sigShutdown.emit()
 
-        # Wait for fetcher to stop running before stopping the thread
+        # Wait for downloader to stop running before stopping the thread
         now = time.time() 
-        while self._fetcher is not None and self._fetcher.running:
+        while self._downloader is not None and self._downloader.running:
             time.sleep(0.1)
             if time.time() - now > 1:
                 break
@@ -308,11 +308,11 @@ class TileManager(QObject):
             self._thread.wait()
 
     def sendReset(self) -> None:
-        '''Send reset signal to fetcher'''
+        '''Send reset signal to downloader'''
         self.sigReset.emit()
 
     def setAimpoint(self, zoom:int, x:int, y:int)->None:
-        '''Send set aimpoint to fetcher.  Used for prioritization
+        '''Send set aimpoint to downloader.  Used for prioritization
         
         Parameters
         ----------
@@ -326,7 +326,7 @@ class TileManager(QObject):
         self.sigSetAimpoint.emit(zoom, x, y)
 
     def requestTile(self, zoom:int, x:int, y:int)->None:
-        '''Send tile request to fetcher
+        '''Send tile request to downloader
         
         Parameters
         ----------
@@ -345,11 +345,11 @@ class TileManager(QObject):
 class TileViewer(QWidget):
     requestTile = Signal(int, int, int)
     setAimpoint = Signal(int, int, int)
-    resetFetcher = Signal()
+    resetDownloader = Signal()
 
     def __init__(self, cache_dir, url_template):
         super().__init__()
-        self.setWindowTitle("TileFetcher Demo")
+        self.setWindowTitle("TileDownloader Demo")
         self.tile_manager = None
         layout = QVBoxLayout(self)
         self.label = QLabel("No tile yet")

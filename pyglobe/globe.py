@@ -15,7 +15,7 @@ from OpenGL.GL import *
 from OpenGL.GLU import *
 
 # This Project Imports
-from pyglobe.tile_fetcher import TileManager
+from pyglobe.tile_manager import TileManager
 from pyglobe.scene import *
 from pyglobe.coord_utils import *
 from pyglobe.tile_utils import latlon_to_tile, tile_y_to_lat
