@@ -41,14 +41,18 @@ class GlobeWidget(QOpenGLWidget):
         # Earth radius in meters
         self.earth_radius = 6371000
         
-        # Tile textures
+        # Tile textures : tile_key : texture
         self.tile_textures = OrderedDict()
         # Level 3 - Keep it separate so we always have it
+        # tile key : texture
         self.base_textures = OrderedDict()
         self.tile_cache_path = tile_cache_dir
 
+        # tile key : true
         self.inflight_tiles = {}  # Tiles currently being fetched
+        # tile key : true
         self.pending_tile_data = {}  # Tiles waiting to be uploaded to GPU
+        # tile key : True/False
         self.screen_tiles = {}  # Tiles that should be visible
         
         # OSM tile URL template
@@ -71,13 +75,22 @@ class GlobeWidget(QOpenGLWidget):
         self.base_layer_loaded = False
 
     def init_tile_manager(self, cache_dir, url_template):
+
         if self.tile_manager is not None:
             self.tile_manager.stop()
             del self.tile_manager
 
+        self.clear_textures()
+
         self.tile_manager = TileManager(cache_dir, url_template)
         self.tile_manager.tileReady.connect(self.on_tile_ready)
         self.tile_manager.start()
+
+        self.load_base_textures()
+        self.request_visible_tiles()
+
+        self.update()
+
 
         
     def initializeGL(self):
@@ -161,6 +174,25 @@ class GlobeWidget(QOpenGLWidget):
     #------------------------------------------------
     # Tile Handling
     #------------------------------------------------
+    def clear_textures(self):
+        if len(self.base_textures):
+            glDeleteTextures(list(self.base_textures.values()))
+        self.base_textures.clear()
+
+        if len(self.tile_textures):
+            glDeleteTextures(list(self.tile_textures.values()))
+
+        self.pending_tile_data.clear()
+
+        self.inflight_tiles.clear()
+
+        self.tile_textures.clear()
+             
+        self.screen_tiles = {}
+
+
+
+
     def calculate_zoom_level(self)->int:
         """Calculate appropriate zoom level based on camera distance"""
         altitude = self.camera_distance - self.earth_radius

@@ -170,7 +170,6 @@ class TileFetcher(QObject):
         reply = self.nam.get(req)
         reply.finished.connect(lambda: self._on_finished(reply, z, x, y))
         self.active[(z, x, y)] = reply
-        print ("done disbatch next")
 
     def _on_finished(self, reply: QNetworkReply, z:int, x:int, y:int)->None:
         """Handle a response from tile server - cache the tile, emit tileReady
